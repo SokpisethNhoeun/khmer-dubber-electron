@@ -1,0 +1,13 @@
+fastapi>=0.111.0
+uvicorn>=0.30.1
+websockets>=12.0
+google-genai>=0.3.0
+edge-tts>=6.1.12
+yt-dlp
+openai-whisper
+torch
+torchaudio
+demucs
+pydantic
+pyinstaller
+cryptography
