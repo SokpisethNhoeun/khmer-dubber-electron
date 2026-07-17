@@ -5,6 +5,21 @@ import './LicenseActivation.css';
 
 const API_BASE = import.meta.env.VITE_LICENSE_SERVER_URL || 'https://video-dubber-khmer-v1.fastapicloud.dev';
 
+// Helper: fetch with retry (waits for local proxy sidecar to be ready)
+const fetchWithRetry = async (url, options, retries = 5, delay = 1000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fetch(url, options);
+    } catch (e) {
+      if (i < retries - 1) {
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        throw e;
+      }
+    }
+  }
+};
+
 export default function LicenseActivation({ onActivated }) {
   const [step, setStep] = useState(() => {
     const stored = localStorage.getItem('kvd_buy_step');
@@ -189,7 +204,7 @@ export default function LicenseActivation({ onActivated }) {
     
     try {
       const { deviceId, deviceName } = await getDeviceInfo();
-      const res = await fetch(`${API_BASE}/v1/licenses/activate`, {
+      const res = await fetchWithRetry(`${API_BASE}/v1/licenses/activate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -232,7 +247,7 @@ export default function LicenseActivation({ onActivated }) {
     setIsValidating(true);
     
     try {
-      const res = await fetch(`${API_BASE}/v1/auth/email-otp/request`, {
+      const res = await fetchWithRetry(`${API_BASE}/v1/auth/email-otp/request`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.trim().toLowerCase() })
@@ -270,7 +285,7 @@ export default function LicenseActivation({ onActivated }) {
     setIsValidating(true);
     
     try {
-      const res = await fetch(`${API_BASE}/v1/auth/email-otp/verify`, {
+      const res = await fetchWithRetry(`${API_BASE}/v1/auth/email-otp/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -305,7 +320,7 @@ export default function LicenseActivation({ onActivated }) {
     setIsValidating(true);
     
     try {
-      const res = await fetch(`${API_BASE}/v1/payments/checkout`, {
+      const res = await fetchWithRetry(`${API_BASE}/v1/payments/checkout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -343,7 +358,7 @@ export default function LicenseActivation({ onActivated }) {
     
     statusPollRef.current = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/v1/payments/${referenceId}/status`);
+        const res = await fetchWithRetry(`${API_BASE}/v1/payments/${referenceId}/status`);
         if (res.ok) {
           const data = await res.json().catch(() => ({}));
           if (data.status === 'paid') {
