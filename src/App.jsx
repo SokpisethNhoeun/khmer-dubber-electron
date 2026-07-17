@@ -95,6 +95,7 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           if (data.valid) {
+            localStorage.setItem('kvd_last_online_validation', Date.now().toString());
             setActivationState('activated');
             return;
           }
@@ -103,6 +104,17 @@ export default function App() {
         }
       } catch (e) {
         console.error('Validation check failed, using offline fallback', e);
+        const lastValid = localStorage.getItem('kvd_last_online_validation');
+        const now = Date.now();
+        // 24 hours offline grace limit
+        if (lastValid && now - parseInt(lastValid, 10) > 24 * 60 * 60 * 1000) {
+          alert('You have been offline for more than 24 hours. Please connect to the internet to validate your license.');
+          setActivationState('unactivated');
+          return;
+        }
+        if (!lastValid) {
+          localStorage.setItem('kvd_last_online_validation', now.toString());
+        }
         setActivationState('activated');
         return;
       }
@@ -135,7 +147,16 @@ export default function App() {
           })
         });
         
-        if (!res.ok) {
+        if (res.ok) {
+          const data = await res.json();
+          if (data.valid) {
+            localStorage.setItem('kvd_last_online_validation', Date.now().toString());
+          } else {
+            localStorage.removeItem('kvd_activation_token');
+            setActivationState('unactivated');
+            alert('License has expired or was reset by the administrator. Device logged out.');
+          }
+        } else {
           // License expired, disabled, or device was reset by admin
           localStorage.removeItem('kvd_activation_token');
           setActivationState('unactivated');
@@ -143,6 +164,13 @@ export default function App() {
         }
       } catch (e) {
         console.error('Periodic license check failed (offline), maintaining session', e);
+        const lastValid = localStorage.getItem('kvd_last_online_validation');
+        const now = Date.now();
+        if (lastValid && now - parseInt(lastValid, 10) > 24 * 60 * 60 * 1000) {
+          localStorage.removeItem('kvd_activation_token');
+          setActivationState('unactivated');
+          alert('You have been offline for more than 24 hours. Please connect to the internet to validate your license.');
+        }
       }
     }, 120000); // 2 minutes
 
