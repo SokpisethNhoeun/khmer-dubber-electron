@@ -33,7 +33,7 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
 
-    - name: Download and Bundle FFmpeg for Windows
+    - name: Download and Bundle FFmpeg and AI Models for Windows
       shell: pwsh
       run: |
         Write-Host "Downloading FFmpeg..."
@@ -45,6 +45,17 @@ jobs:
         Copy-Item -Path "ffmpeg_temp/ffmpeg-master-*/bin/ffprobe.exe" -Destination "python-backend/bin/"
         Remove-Item -Recurse -Force "ffmpeg.zip", "ffmpeg_temp"
         Write-Host "FFmpeg successfully bundled."
+
+        Write-Host "Downloading Whisper base model..."
+        New-Item -ItemType Directory -Force -Path "python-backend/bin/models"
+        Invoke-WebRequest -Uri "https://openaipublic.azureedge.net/main/whisper/models/ed3a0b6b1c55be112895f2b7962d2d32fc84e3f5d5d212c1b8fcb65585352f74/base.pt" -OutFile "python-backend/bin/models/base.pt"
+        Write-Host "Whisper base model successfully bundled."
+
+        Write-Host "Downloading Demucs htdemucs checkpoint..."
+        New-Item -ItemType Directory -Force -Path "python-backend/bin/checkpoints"
+        Invoke-WebRequest -Uri "https://dl.fbaipublicfiles.com/demucs/hybridtransformer/955717e8-872c5565.th" -OutFile "python-backend/bin/checkpoints/955717e8-872c5565.th"
+        Write-Host "Demucs checkpoint successfully bundled."
+
 
     - name: Build Python backend binary
       shell: cmd

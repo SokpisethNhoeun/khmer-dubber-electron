@@ -65,6 +65,36 @@ if os.path.isabs(FFMPEG_PATH):
         os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
         logger.info(f"Prepended FFmpeg directory to PATH: {ffmpeg_dir}")
 
+# Copy bundled Whisper and Demucs models to local directories on startup
+try:
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    
+    # 1. Copy bundled Whisper 'base' model
+    bundled_whisper_path = os.path.join(base_dir, "bin", "models", "base.pt")
+    local_whisper_dir = os.path.join(USER_DATA_DIR, "models")
+    local_whisper_path = os.path.join(local_whisper_dir, "base.pt")
+    
+    if os.path.exists(bundled_whisper_path):
+        os.makedirs(local_whisper_dir, exist_ok=True)
+        if not os.path.exists(local_whisper_path):
+            logger.info(f"Copying bundled Whisper base model to: {local_whisper_path}")
+            shutil.copy2(bundled_whisper_path, local_whisper_path)
+            
+    # 2. Copy bundled Demucs 'htdemucs' model checkpoint
+    bundled_demucs_path = os.path.join(base_dir, "bin", "checkpoints", "955717e8-872c5565.th")
+    local_demucs_dir = os.path.join(os.path.expanduser("~"), ".cache", "torch", "hub", "checkpoints")
+    local_demucs_path = os.path.join(local_demucs_dir, "955717e8-872c5565.th")
+    
+    if os.path.exists(bundled_demucs_path):
+        os.makedirs(local_demucs_dir, exist_ok=True)
+        if not os.path.exists(local_demucs_path):
+            logger.info(f"Copying bundled Demucs model to: {local_demucs_path}")
+            shutil.copy2(bundled_demucs_path, local_demucs_path)
+            
+except Exception as e:
+    logger.error(f"Error checking/copying bundled models: {e}")
+
+
 
 # State store for active project
 class ProjectState:
