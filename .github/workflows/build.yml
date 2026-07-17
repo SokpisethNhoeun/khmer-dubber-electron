@@ -24,6 +24,7 @@ jobs:
         cache: 'pip'
 
     - name: Install Python dependencies
+      shell: cmd
       run: |
         cd python-backend
         python -m venv venv
@@ -33,6 +34,7 @@ jobs:
         pip install pyinstaller
 
     - name: Build Python backend binary
+      shell: cmd
       run: |
         cd python-backend
         call venv\Scripts\activate
