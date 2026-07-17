@@ -57,6 +57,15 @@ def get_ffmpeg_path():
 FFMPEG_PATH = get_ffmpeg_path()
 logger.info(f"FFmpeg path set to: {FFMPEG_PATH}")
 
+# Add the directory containing ffmpeg/ffprobe to the system PATH environment variable
+# so that third-party packages (like OpenAI Whisper) can invoke it via subprocess.
+if os.path.isabs(FFMPEG_PATH):
+    ffmpeg_dir = os.path.dirname(FFMPEG_PATH)
+    if ffmpeg_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+        logger.info(f"Prepended FFmpeg directory to PATH: {ffmpeg_dir}")
+
+
 # State store for active project
 class ProjectState:
     def __init__(self):
