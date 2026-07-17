@@ -277,48 +277,92 @@ async def get_project_file(file_path: str):
 async def stats_pusher_loop(websocket: WebSocket):
     while True:
         try:
-            # 1. Get RAM info from /proc/meminfo
+            # 1. Get RAM info
             mem_total = 0
             mem_used = 0
-            try:
-                with open('/proc/meminfo', 'r') as f:
-                    mem_free = 0
-                    mem_buffers = 0
-                    mem_cached = 0
-                    for line in f:
-                        parts = line.split()
-                        if parts[0] == 'MemTotal:':
-                            mem_total = int(parts[1]) * 1024
-                        elif parts[0] == 'MemFree:':
-                            mem_free = int(parts[1]) * 1024
-                        elif parts[0] == 'Buffers:':
-                            mem_buffers = int(parts[1]) * 1024
-                        elif parts[0] == 'Cached:':
-                            mem_cached = int(parts[1]) * 1024
-                    mem_avail = mem_free + mem_buffers + mem_cached
-                    mem_used = mem_total - mem_avail
-            except Exception:
-                pass
+            if PLATFORM == "win32":
+                try:
+                    import ctypes
+                    class MEMORYSTATUSEX(ctypes.Structure):
+                        _fields_ = [
+                            ("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                        ]
+                    stat = MEMORYSTATUSEX()
+                    stat.dwLength = ctypes.sizeof(stat)
+                    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+                    mem_total = stat.ullTotalPhys
+                    mem_used = stat.ullTotalPhys - stat.ullAvailPhys
+                except Exception:
+                    pass
+            else:
+                try:
+                    with open('/proc/meminfo', 'r') as f:
+                        mem_free = 0
+                        mem_buffers = 0
+                        mem_cached = 0
+                        for line in f:
+                            parts = line.split()
+                            if parts[0] == 'MemTotal:':
+                                mem_total = int(parts[1]) * 1024
+                            elif parts[0] == 'MemFree:':
+                                mem_free = int(parts[1]) * 1024
+                            elif parts[0] == 'Buffers:':
+                                mem_buffers = int(parts[1]) * 1024
+                            elif parts[0] == 'Cached:':
+                                mem_cached = int(parts[1]) * 1024
+                        mem_avail = mem_free + mem_buffers + mem_cached
+                        mem_used = mem_total - mem_avail
+                except Exception:
+                    pass
 
-            # 2. Get GPU info from nvidia-smi
+            # 2. Get GPU info from PyTorch/CUDA or nvidia-smi
             gpu_total = 0
             gpu_used = 0
             gpu_brand = "N/A"
             try:
-                res = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=memory.total,memory.used,name", "--format=csv,nounits,noheader"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=1
-                )
-                if res.returncode == 0 and res.stdout.strip():
-                    parts = res.stdout.strip().split(",")
-                    gpu_total = int(parts[0].strip()) * 1024 * 1024
-                    gpu_used = int(parts[1].strip()) * 1024 * 1024
-                    gpu_brand = parts[2].strip()
+                import torch
+                if torch.cuda.is_available():
+                    device_id = 0
+                    gpu_brand = torch.cuda.get_device_name(device_id)
+                    gpu_total = torch.cuda.get_device_properties(device_id).total_memory
+                    gpu_used = torch.cuda.memory_reserved(device_id)
             except Exception:
                 pass
+
+            if gpu_total == 0:
+                try:
+                    smi_path = "nvidia-smi"
+                    if PLATFORM == "win32":
+                        common_paths = [
+                            "C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe",
+                            os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "nvidia-smi.exe")
+                        ]
+                        for p in common_paths:
+                            if os.path.exists(p):
+                                smi_path = p
+                                break
+                    res = subprocess.run(
+                        [smi_path, "--query-gpu=memory.total,memory.used,name", "--format=csv,nounits,noheader"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        timeout=1
+                    )
+                    if res.returncode == 0 and res.stdout.strip():
+                        parts = res.stdout.strip().split(",")
+                        gpu_total = int(parts[0].strip()) * 1024 * 1024
+                        gpu_used = int(parts[1].strip()) * 1024 * 1024
+                        gpu_brand = parts[2].strip()
+                except Exception:
+                    pass
 
             await send_event(websocket, "sys_stats", {
                 "ram_total": mem_total,
