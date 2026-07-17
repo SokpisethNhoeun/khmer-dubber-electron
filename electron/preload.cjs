@@ -12,5 +12,6 @@ contextBridge.exposeInMainWorld('electron', {
   getTempWorkspace: () => ipcRenderer.invoke('get-temp-workspace'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   getHostname: () => ipcRenderer.invoke('get-hostname'),
-  exportLogs: () => ipcRenderer.invoke('export-logs')
+  exportLogs: () => ipcRenderer.invoke('export-logs'),
+  apiRequest: (opts) => ipcRenderer.invoke('api-request', opts)
 });

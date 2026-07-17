@@ -223,6 +223,52 @@ ipcMain.handle('export-logs', async () => {
   }
 });
 
+// Native Node.js API proxy — bypasses CORS/Cloudflare without needing Python sidecar
+ipcMain.handle('api-request', async (event, { url, method, body }) => {
+  const https = require('https');
+  const http = require('http');
+  
+  return new Promise((resolve) => {
+    try {
+      const parsedUrl = new URL(url);
+      const lib = parsedUrl.protocol === 'https:' ? https : http;
+      
+      const options = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: method || 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        rejectUnauthorized: false
+      };
+
+      const req = lib.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          let parsed = null;
+          try { parsed = JSON.parse(data); } catch { parsed = data; }
+          resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, data: parsed });
+        });
+      });
+
+      req.on('error', (err) => {
+        logToFile('ERROR', `api-request error: ${err.message}`);
+        resolve({ ok: false, status: 0, data: null, error: err.message });
+      });
+
+      if (body) req.write(typeof body === 'string' ? body : JSON.stringify(body));
+      req.end();
+    } catch (err) {
+      logToFile('ERROR', `api-request exception: ${err.message}`);
+      resolve({ ok: false, status: 0, data: null, error: err.message });
+    }
+  });
+});
+
 ipcMain.handle('encrypt-string', async (event, plainText) => {
   try {
     if (safeStorage.isEncryptionAvailable()) {

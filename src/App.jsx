@@ -22,6 +22,7 @@ import VideoPreview from './components/VideoPreview';
 import LicenseActivation from './components/LicenseActivation';
 import { Input } from './components/ui/input';
 import { wsService } from './services/websocket';
+import { apiFetch } from './services/apiFetch';
 import { AlertCircle, Key } from 'lucide-react';
 
 export default function App() {
@@ -71,21 +72,6 @@ export default function App() {
     sponsor_duration: 5
   });
 
-  // Helper: fetch with retry (waits for local proxy to be ready)
-  const fetchWithRetry = async (url, options, retries = 5, delay = 1000) => {
-    for (let i = 0; i < retries; i++) {
-      try {
-        return await fetch(url, options);
-      } catch (e) {
-        if (i < retries - 1) {
-          await new Promise(r => setTimeout(r, delay));
-        } else {
-          throw e;
-        }
-      }
-    }
-  };
-
   // 1. Initial License Verification on Startup
   useEffect(() => {
     const verifyLicense = async () => {
@@ -98,10 +84,8 @@ export default function App() {
       }
       
       try {
-        const serverUrl = import.meta.env.VITE_LICENSE_SERVER_URL || 'https://video-dubber-khmer-v1.fastapicloud.dev';
-        const res = await fetchWithRetry(`${serverUrl}/v1/licenses/validate`, {
+        const res = await apiFetch('/v1/licenses/validate', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             activation_token: storedToken,
             device_id: storedDeviceId
@@ -152,10 +136,8 @@ export default function App() {
       }
       
       try {
-        const serverUrl = import.meta.env.VITE_LICENSE_SERVER_URL || 'https://video-dubber-khmer-v1.fastapicloud.dev';
-        const res = await fetch(`${serverUrl}/v1/licenses/validate`, {
+        const res = await apiFetch('/v1/licenses/validate', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             activation_token: storedToken,
             device_id: storedDeviceId
