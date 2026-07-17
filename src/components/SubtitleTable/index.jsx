@@ -1,10 +1,10 @@
 import React, { useState, useRef } from 'react';
-import { Plus, Trash2, Edit2, Search, BarChart2, Check, X, Play, Pause } from 'lucide-react';
+import { Plus, Trash2, Edit2, Search, BarChart2, Check, X, Play, Pause, Sparkles } from 'lucide-react';
 import { Input } from '../ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import './SubtitleTable.css';
 
-export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelect, activeRowId }) {
+export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelect, activeRowId, onAutoEmotion }) {
   const [editingId, setEditingId] = useState(null);
   const [editValues, setEditValues] = useState({});
   const [showFindReplace, setShowFindReplace] = useState(false);
@@ -67,8 +67,12 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
   const handleSaveEdit = () => {
     const updated = subtitles.map(sub => {
       if (sub.id === editingId) {
-        // If Khmer text or speaker voice changed, reset audio status to not generated
-        const status = (sub.khmer_text !== editValues.khmer_text || sub.voice !== editValues.voice) ? 'not_generated' : sub.audio_status;
+        // If Khmer text, voice, or emotion changed, reset audio status to not generated
+        const status = (
+          sub.khmer_text !== editValues.khmer_text || 
+          sub.voice !== editValues.voice || 
+          sub.emotion !== editValues.emotion
+        ) ? 'not_generated' : sub.audio_status;
         return { ...editValues, audio_status: status };
       }
       return sub;
@@ -113,6 +117,7 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
       chinese_text: "新字幕",
       khmer_text: "អត្ថបទថ្មី",
       voice: "female",
+      emotion: "normal",
       audio_status: "not_generated",
       audio_path: ""
     };
@@ -223,14 +228,30 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
         <table className="subtitles-data-table">
           <thead>
             <tr>
-              <th width="40">ID</th>
-              <th width="80">Start</th>
-              <th width="80">End</th>
-              <th width="200">Chinese Original</th>
+              <th>ID</th>
+              <th>Start</th>
+              <th>End</th>
+              <th>Chinese Original</th>
               <th>Khmer Translation (Double Click to Edit)</th>
-              <th width="90">Voice</th>
-              <th width="120">Audio</th>
-              <th width="60">Action</th>
+              <th>Voice</th>
+              <th>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>Emotion</span>
+                  <Sparkles 
+                    size={12} 
+                    style={{ color: 'var(--primary)', cursor: 'pointer', transition: 'transform 0.15s ease' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onAutoEmotion) onAutoEmotion();
+                    }}
+                    onMouseOver={(e) => e.currentTarget.style.transform = 'scale(1.2)'}
+                    onMouseOut={(e) => e.currentTarget.style.transform = 'scale(1.0)'}
+                    title="Auto-classify all emotions using Gemini AI"
+                  />
+                </div>
+              </th>
+              <th>Audio</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -299,6 +320,51 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
                     )}
                   </td>
                   <td>
+                    {isEditing ? (
+                      <Select 
+                        value={editValues.emotion || 'normal'}
+                        onValueChange={(val) => handleEditChange('emotion', val)}
+                      >
+                        <SelectTrigger className="h-7 py-0.5 px-2 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="normal">Normal</SelectItem>
+                          <SelectItem value="excited">Excited</SelectItem>
+                          <SelectItem value="sad">Sad</SelectItem>
+                          <SelectItem value="fearful">Scared</SelectItem>
+                          <SelectItem value="cheerful">Cheerful</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <span className={`emotion-tag ${sub.emotion || 'normal'}`} style={{
+                        display: 'inline-block',
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        fontSize: '11px',
+                        fontWeight: '500',
+                        textTransform: 'capitalize',
+                        background: sub.emotion === 'excited' ? 'rgba(239, 68, 68, 0.15)' :
+                                    sub.emotion === 'sad' ? 'rgba(59, 130, 246, 0.15)' :
+                                    sub.emotion === 'fearful' ? 'rgba(168, 85, 247, 0.15)' :
+                                    sub.emotion === 'cheerful' ? 'rgba(34, 197, 94, 0.15)' :
+                                    'rgba(255, 255, 255, 0.08)',
+                        color: sub.emotion === 'excited' ? '#ef4444' :
+                               sub.emotion === 'sad' ? '#3b82f6' :
+                               sub.emotion === 'fearful' ? '#a855f7' :
+                               sub.emotion === 'cheerful' ? '#22c55e' :
+                               'var(--text-muted)',
+                        border: sub.emotion === 'excited' ? '1px solid rgba(239, 68, 68, 0.3)' :
+                                sub.emotion === 'sad' ? '1px solid rgba(59, 130, 246, 0.3)' :
+                                sub.emotion === 'fearful' ? '1px solid rgba(168, 85, 247, 0.3)' :
+                                sub.emotion === 'cheerful' ? '1px solid rgba(34, 197, 94, 0.3)' :
+                                '1px solid rgba(255, 255, 255, 0.1)'
+                      }}>
+                        {sub.emotion || 'normal'}
+                      </span>
+                    )}
+                  </td>
+                  <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <span className={`status-badge ${sub.audio_status}`} style={{ margin: 0 }}>
                         {sub.audio_status.replace('_', ' ')}
@@ -354,7 +420,7 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
             })}
             {subtitles.length === 0 && (
               <tr>
-                <td colSpan="8" className="empty-table-cell">
+                <td colSpan="9" className="empty-table-cell">
                   No subtitle segments available. Please run transcription.
                 </td>
               </tr>

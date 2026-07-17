@@ -73,12 +73,17 @@ export default function TimelineEditor({
   // Sync WaveSurfer audio playback and seek
   useEffect(() => {
     if (wavesurferRef.current) {
-      wavesurferRef.current.zoom(zoom);
-      // Sync time
-      const wsDuration = wavesurferRef.current.getDuration() || duration;
-      const progress = currentTime / wsDuration;
-      if (progress >= 0 && progress <= 1) {
-        wavesurferRef.current.setTime(currentTime);
+      try {
+        wavesurferRef.current.zoom(zoom);
+        // Sync time
+        const wsDuration = wavesurferRef.current.getDuration() || duration;
+        const progress = currentTime / wsDuration;
+        if (progress >= 0 && progress <= 1) {
+          wavesurferRef.current.setTime(currentTime);
+        }
+      } catch (err) {
+        // Suppress wavesurfer errors if audio has not fully loaded/initialized yet
+        console.warn("WaveSurfer sync ignored:", err);
       }
     }
   }, [currentTime, zoom, duration]);

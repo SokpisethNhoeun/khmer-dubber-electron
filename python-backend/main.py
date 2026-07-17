@@ -102,6 +102,7 @@ class ProjectState:
         self.project_dir = None
         self.project_data = None
         self.lock = threading.Lock()
+        self.active_tasks = {}
 
 state = ProjectState()
 
@@ -494,6 +495,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         await send_event(websocket, "progress", {"stage": "transcribing", "progress": 0, "status": "Initializing Whisper model..."})
                         
                         def trans_progress(evt):
+                            if "transcribe" not in state.active_tasks:
+                                return
                             asyncio.run_coroutine_threadsafe(
                                 send_event(websocket, "progress", {
                                     "stage": evt["stage"],
@@ -519,11 +522,17 @@ async def websocket_endpoint(websocket: WebSocket):
                                 json.dump(state.project_data, f, indent=2, ensure_ascii=False)
                                 
                         await send_event(websocket, "transcribed", {"project_data": state.project_data})
+                    except asyncio.CancelledError:
+                        logger.info("Transcription task cancelled.")
+                        await send_event(websocket, "progress", {"stage": "transcribing", "progress": 0, "status": "Transcription cancelled."})
                     except Exception as e:
                         logger.error(f"Transcription failed: {e}")
                         await send_event(websocket, "error", {"message": f"Transcription failed: {str(e)}"})
+                    finally:
+                        state.active_tasks.pop("transcribe", None)
                         
-                asyncio.create_task(run_transcription())
+                t = asyncio.create_task(run_transcription())
+                state.active_tasks["transcribe"] = t
                 
             elif cmd == "translate":
                 api_key = message.get("api_key")
@@ -551,11 +560,55 @@ async def websocket_endpoint(websocket: WebSocket):
                                 json.dump(state.project_data, f, indent=2, ensure_ascii=False)
                                 
                         await send_event(websocket, "translated", {"project_data": state.project_data})
+                    except asyncio.CancelledError:
+                        logger.info("Translation task cancelled.")
+                        await send_event(websocket, "progress", {"stage": "translating", "progress": 0, "status": "Translation cancelled."})
                     except Exception as e:
                         logger.error(f"Translation failed: {e}")
                         await send_event(websocket, "error", {"message": f"Translation failed: {str(e)}"})
+                    finally:
+                        state.active_tasks.pop("translate", None)
                         
-                asyncio.create_task(run_translation())
+                t = asyncio.create_task(run_translation())
+                state.active_tasks["translate"] = t
+                
+            elif cmd == "auto_emotion":
+                api_key = message.get("api_key")
+                model_name = message.get("model", "gemini-3.1-flash-lite")
+                
+                if not state.project_dir or not state.project_data or not state.project_data.get("subtitles"):
+                    await send_event(websocket, "error", {"message": "Load or transcribe subtitles first."})
+                    continue
+                    
+                async def run_emotion_classification():
+                    try:
+                        await send_event(websocket, "progress", {"stage": "auto_emotion", "progress": 30, "status": "Classifying subtitle emotions using Gemini..."})
+                        
+                        subtitles = await asyncio.to_thread(
+                            translator.classify_subtitles_emotions,
+                            state.project_data["subtitles"],
+                            api_key,
+                            model_name
+                        )
+                        
+                        with state.lock:
+                            state.project_data["subtitles"] = subtitles
+                            project_json_path = os.path.join(state.project_dir, "project.json")
+                            with open(project_json_path, 'w', encoding='utf-8') as f:
+                                json.dump(state.project_data, f, indent=2, ensure_ascii=False)
+                                
+                        await send_event(websocket, "auto_emotion_completed", {"project_data": state.project_data})
+                    except asyncio.CancelledError:
+                        logger.info("Emotion classification task cancelled.")
+                        await send_event(websocket, "progress", {"stage": "auto_emotion", "progress": 0, "status": "Emotion classification cancelled."})
+                    except Exception as e:
+                        logger.error(f"Emotion classification failed: {e}")
+                        await send_event(websocket, "error", {"message": f"Emotion classification failed: {str(e)}"})
+                    finally:
+                        state.active_tasks.pop("auto_emotion", None)
+                        
+                t = asyncio.create_task(run_emotion_classification())
+                state.active_tasks["auto_emotion"] = t
                 
             elif cmd == "isolate_bgm":
                 if not state.project_dir or not state.project_data or not state.project_data.get("video_path"):
@@ -567,6 +620,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         video_abs_path = os.path.join(state.project_dir, state.project_data["video_path"])
                         
                         def bgm_progress(evt):
+                            if "isolate_bgm" not in state.active_tasks:
+                                return
                             asyncio.run_coroutine_threadsafe(
                                 send_event(websocket, "progress", {
                                     "stage": evt["stage"],
@@ -594,11 +649,17 @@ async def websocket_endpoint(websocket: WebSocket):
                                 json.dump(state.project_data, f, indent=2, ensure_ascii=False)
                                 
                         await send_event(websocket, "bgm_isolated", {"project_data": state.project_data})
+                    except asyncio.CancelledError:
+                        logger.info("BGM isolation task cancelled.")
+                        await send_event(websocket, "progress", {"stage": "isolating_bgm", "progress": 0, "status": "BGM isolation cancelled."})
                     except Exception as e:
                         logger.error(f"BGM isolation failed: {e}")
                         await send_event(websocket, "error", {"message": f"BGM isolation failed: {str(e)}"})
+                    finally:
+                        state.active_tasks.pop("isolate_bgm", None)
                         
-                asyncio.create_task(run_bgm())
+                t = asyncio.create_task(run_bgm())
+                state.active_tasks["isolate_bgm"] = t
                 
             elif cmd == "generate_tts":
                 # User can update subtitles directly before generating TTS
@@ -617,6 +678,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         await send_event(websocket, "progress", {"stage": "generating_tts", "progress": 0, "status": "Generating Khmer neural voice segments..."})
                         
                         def tts_progress(p):
+                            if "generate_tts" not in state.active_tasks:
+                                return
                             asyncio.create_task(
                                 send_event(websocket, "progress", {"stage": "generating_tts", "progress": p, "status": f"Generating Khmer voices ({p}%)..."})
                             )
@@ -635,12 +698,34 @@ async def websocket_endpoint(websocket: WebSocket):
                                 json.dump(state.project_data, f, indent=2, ensure_ascii=False)
                                 
                         await send_event(websocket, "tts_generated", {"project_data": state.project_data})
+                    except asyncio.CancelledError:
+                        logger.info("TTS generation task cancelled/paused.")
+                        # Save whatever segments finished generating so far
+                        with state.lock:
+                            project_json_path = os.path.join(state.project_dir, "project.json")
+                            with open(project_json_path, 'w', encoding='utf-8') as f:
+                                json.dump(state.project_data, f, indent=2, ensure_ascii=False)
+                        await send_event(websocket, "progress", {"stage": "generating_tts", "progress": 0, "status": "TTS generation paused."})
+                        await send_event(websocket, "tts_paused", {"project_data": state.project_data})
                     except Exception as e:
                         logger.error(f"TTS generation failed: {e}")
                         await send_event(websocket, "error", {"message": f"TTS generation failed: {str(e)}"})
+                    finally:
+                        state.active_tasks.pop("generate_tts", None)
                         
-                asyncio.create_task(run_tts())
+                t = asyncio.create_task(run_tts())
+                state.active_tasks["generate_tts"] = t
                 
+            elif cmd == "cancel_job":
+                job_name = message.get("job_name")
+                if job_name in state.active_tasks:
+                    task = state.active_tasks[job_name]
+                    task.cancel()
+                    logger.info(f"Successfully cancelled background job: {job_name}")
+                    await send_event(websocket, "job_cancelled", {"job_name": job_name})
+                else:
+                    await send_event(websocket, "error", {"message": f"Job {job_name} is not running."})
+
             elif cmd == "validate_api_key":
                 api_key = message.get("api_key")
                 model_name = message.get("model", "gemini-3.1-flash-lite")
@@ -688,6 +773,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         await send_event(websocket, "progress", {"stage": "exporting", "progress": 0, "status": "Starting export pipeline..."})
                         
                         def export_progress(evt):
+                            if "export" not in state.active_tasks:
+                                return
                             asyncio.run_coroutine_threadsafe(
                                 send_event(websocket, "progress", {
                                     "stage": evt["stage"],
@@ -715,11 +802,17 @@ async def websocket_endpoint(websocket: WebSocket):
                             video_output_abs = output_path
                             
                         await send_event(websocket, "exported", {"video_path": video_output_abs})
+                    except asyncio.CancelledError:
+                        logger.info("Export task cancelled.")
+                        await send_event(websocket, "progress", {"stage": "exporting", "progress": 0, "status": "Export cancelled."})
                     except Exception as e:
                         logger.error(f"Export failed: {e}")
                         await send_event(websocket, "error", {"message": f"Export failed: {str(e)}"})
+                    finally:
+                        state.active_tasks.pop("export", None)
                         
-                asyncio.create_task(run_export())
+                t = asyncio.create_task(run_export())
+                state.active_tasks["export"] = t
                 
             elif cmd == "save_project":
                 zip_path = message.get("zip_path")

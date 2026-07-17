@@ -255,6 +255,23 @@ export default function VideoCustomizer({ settings, onChange }) {
               </>
             )}
           </div>
+          {/* Subtitle Background Style */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '5px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+            <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Subtitle Background Style</label>
+            <Select 
+              value={settings.subtitle_bg_style || 'black'} 
+              onValueChange={(val) => onChange('subtitle_bg_style', val)}
+            >
+              <SelectTrigger className="h-8 py-1 px-3 text-[11px] w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="black">Black Opaque (Default)</SelectItem>
+                <SelectItem value="blur">Modern Blurred Glass</SelectItem>
+                <SelectItem value="transparent">Transparent (Outline Text)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         
         {/* Right column: Sponsor settings */}

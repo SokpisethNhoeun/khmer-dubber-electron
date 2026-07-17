@@ -50,8 +50,8 @@ def align_audio_duration(file_path, target_duration, ffmpeg_path="ffmpeg"):
     
     # Perform time stretch if the gap is greater than 5% overflow or 15% underflow
     if factor > 1.05 or factor < 0.85:
-        # Cap speedup at 2.0x and slowdown at 0.75x to prevent robotic sounding pitch distortions
-        factor = min(2.0, max(0.75, factor))
+        # Cap speedup at 1.6x and slowdown at 0.75x to prevent robotic sounding pitch distortions
+        factor = min(1.6, max(0.75, factor))
         
         temp_path = file_path + ".temp.mp3"
         if os.path.exists(temp_path):
@@ -75,15 +75,24 @@ def align_audio_duration(file_path, target_duration, ffmpeg_path="ffmpeg"):
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
-async def generate_single_tts(text, voice_type, output_path, target_duration=0, ffmpeg_path="ffmpeg"):
+EMOTION_MAP = {
+    "normal": {"pitch": "+0Hz", "rate": "+0%"},
+    "excited": {"pitch": "+15%", "rate": "+10%"},
+    "sad": {"pitch": "-12%", "rate": "-10%"},
+    "fearful": {"pitch": "+8%", "rate": "-5%"},
+    "cheerful": {"pitch": "+8%", "rate": "+5%"}
+}
+
+async def generate_single_tts(text, voice_type, output_path, target_duration=0, ffmpeg_path="ffmpeg", emotion="normal"):
     """
     Generates audio for a single text segment using edge-tts.
     If target_duration is specified, performs a double-pass to align speaking speed naturally!
     """
     voice = VOICE_MAP.get(voice_type.lower(), "km-KH-SreymomNeural")
+    style = EMOTION_MAP.get(emotion.lower(), {"pitch": "+0Hz", "rate": "+0%"})
     
-    # Pass 1: Generate with normal speed
-    communicate = edge_tts.Communicate(text, voice, rate="+0%", pitch="+0Hz")
+    # Pass 1: Generate with normal/emotional speed
+    communicate = edge_tts.Communicate(text, voice, rate=style["rate"], pitch=style["pitch"])
     await communicate.save(output_path)
     
     if target_duration <= 0:
@@ -99,19 +108,20 @@ async def generate_single_tts(text, voice_type, output_path, target_duration=0, 
     # If speed needs significant adjustments
     if factor > 1.05 or factor < 0.95:
         pct_change = int((factor - 1.0) * 100)
-        # Clamp rate adjustments between -50% and +100%
-        pct_change = min(100, max(-50, pct_change))
+        # Clamp rate adjustments between -50% and +60% (max 1.6x speedup)
+        pct_change = min(60, max(-50, pct_change))
         
         rate_str = f"{pct_change:+d}%"
         logger.info(f"Regenerating TTS segment {output_path} at rate {rate_str} to fit target {target_duration:.2f}s (natural: {natural_dur:.2f}s)")
         
-        # Pass 2: Regenerate with perfect rate
-        communicate = edge_tts.Communicate(text, voice, rate=rate_str, pitch="+0Hz")
+        # Pass 2: Regenerate with perfect rate and emotional pitch
+        communicate = edge_tts.Communicate(text, voice, rate=rate_str, pitch=style["pitch"])
         await communicate.save(output_path)
+
 
 async def generate_tts_for_subtitles(subtitles, project_dir, progress_callback=None, ffmpeg_path="ffmpeg"):
     """
-    Generates TTS audio files for all subtitles.
+    Generates TTS audio files for all subtitles sequentially.
     subtitles is a list of subtitle dicts.
     """
     audio_dir = os.path.join(project_dir, "audio")
@@ -121,13 +131,13 @@ async def generate_tts_for_subtitles(subtitles, project_dir, progress_callback=N
     if total == 0:
         return subtitles
  
-    tasks = []
     for idx, sub in enumerate(subtitles):
         khmer_text = sub.get("khmer_text", "").strip()
         if not khmer_text:
             continue
             
         voice_type = sub.get("voice", "female")
+        emotion = sub.get("emotion", "normal")
         filename = f"seg_{sub['id']:03d}.mp3"
         output_path = os.path.join(audio_dir, filename)
         
@@ -141,31 +151,31 @@ async def generate_tts_for_subtitles(subtitles, project_dir, progress_callback=N
             continue
             
         try:
+            # Yield control to allow cancellation
+            await asyncio.sleep(0.01)
+            
             start_sec = parse_timestamp(sub["start"])
             end_sec = parse_timestamp(sub["end"])
             target_dur = end_sec - start_sec
         except Exception:
             target_dur = 0
         
-        async def run_task(s=sub, text=khmer_text, vt=voice_type, out=output_path, target_t=target_dur, index=idx):
-            try:
-                # Run neural speed rate alignment double pass
-                await generate_single_tts(text, vt, out, target_duration=target_t, ffmpeg_path=ffmpeg_path)
-                # Fine-tune stretch final duration to fit block precisely
-                if target_t > 0:
-                    align_audio_duration(out, target_t, ffmpeg_path)
-                s["audio_status"] = "ready"
-                s["audio_path"] = f"audio/{os.path.basename(out)}"
-            except Exception as e:
-                logger.error(f"Failed to generate TTS for segment {s['id']}: {e}")
-                s["audio_status"] = "failed"
-            
-            if progress_callback:
-                progress_callback(int((index + 1) / total * 100))
-
-        tasks.append(run_task())
+        try:
+            # Run neural speed rate alignment double pass with emotion
+            await generate_single_tts(khmer_text, voice_type, output_path, target_duration=target_dur, ffmpeg_path=ffmpeg_path, emotion=emotion)
+            # Fine-tune stretch final duration to fit block precisely
+            if target_dur > 0:
+                align_audio_duration(output_path, target_dur, ffmpeg_path)
+            sub["audio_status"] = "ready"
+            sub["audio_path"] = audio_rel_path
+        except asyncio.CancelledError:
+            logger.warning(f"TTS generation cancelled at segment {sub['id']}.")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to generate TTS for segment {sub['id']}: {e}")
+            sub["audio_status"] = "failed"
         
-    # Run all pending TTS requests concurrently
-    if tasks:
-        await asyncio.gather(*tasks)
+        if progress_callback:
+            progress_callback(int((idx + 1) / total * 100))
+            
     return subtitles

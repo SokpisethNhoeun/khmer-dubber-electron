@@ -115,6 +115,10 @@ function createWindow() {
     backgroundColor: '#0d0e12',
   });
 
+  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    logToFile('CONSOLE', `[Level ${level}] ${message} (${sourceId}:${line})`);
+  });
+
   if (isDev) {
     mainWindow.loadURL('http://localhost:4927');
     mainWindow.webContents.openDevTools();

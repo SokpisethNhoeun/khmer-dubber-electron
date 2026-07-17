@@ -18,17 +18,17 @@ def get_ffmpeg_path():
 
 def detect_gender_from_array(data, fs):
     """
-    Analyzes an audio data array and returns 'male' or 'female'.
+    Analyzes an audio data array and returns 'male', 'female', or None if inconclusive.
     """
     if len(data) == 0:
-        return 'female'
+        return None
         
     data = data.astype(float)
     max_val = np.max(np.abs(data))
     if max_val > 0:
         data = data / max_val
     else:
-        return 'female'
+        return None
         
     # 1. Zero-phase Brickwall Bandpass Filter (75Hz to 320Hz)
     # This wipes out high-frequency hiss/instruments and low-frequency rumble
@@ -77,7 +77,7 @@ def detect_gender_from_array(data, fs):
             f0_list.append(f0)
     
     if len(f0_list) < 2:
-        return 'female'
+        return None
         
     median_f0 = np.median(f0_list)
     logger.info(f"Analyzed {len(f0_list)} voiced frames. Median F0: {median_f0:.2f} Hz")
@@ -220,7 +220,22 @@ def batch_detect_gender(video_path, subtitles, ffmpeg_path=None):
                 sub["voice"] = gender
             except Exception as e:
                 logger.error(f"Failed to detect gender for segment {sub.get('id')}: {e}")
-                sub["voice"] = "female"
+                sub["voice"] = None
+
+        # Forward/backward fill pass to resolve None values using adjacent segment voices
+        # 1. Find the first non-None detected voice as initial fallback
+        last_voice = "female"
+        for sub in subtitles:
+            if sub.get("voice") is not None:
+                last_voice = sub["voice"]
+                break
+                
+        # 2. Forward pass: fill None with last_voice
+        for sub in subtitles:
+            if sub.get("voice") is None:
+                sub["voice"] = last_voice
+            else:
+                last_voice = sub["voice"]
                 
     except Exception as e:
         logger.error(f"Failed in batch gender detection pipeline: {e}")
@@ -228,4 +243,5 @@ def batch_detect_gender(video_path, subtitles, ffmpeg_path=None):
             os.remove(temp_full_wav)
         # Fallback default values
         for sub in subtitles:
-            sub["voice"] = "female"
+            if sub.get("voice") is None or sub.get("voice") not in ["male", "female"]:
+                sub["voice"] = "female"

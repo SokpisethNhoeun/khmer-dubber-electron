@@ -5,6 +5,7 @@ import {
   Loader2,
   Lock,
   Music,
+  Pause,
   Play,
   Save,
   Settings as SettingsIcon,
@@ -23,7 +24,7 @@ import LicenseActivation from './components/LicenseActivation';
 import { Input } from './components/ui/input';
 import { wsService } from './services/websocket';
 import { apiFetch } from './services/apiFetch';
-import { AlertCircle, Key } from 'lucide-react';
+import { AlertCircle, Key, Link as LinkIcon } from 'lucide-react';
 
 export default function App() {
   const [activationState, setActivationState] = useState('checking'); // 'checking' | 'unactivated' | 'activated'
@@ -41,6 +42,7 @@ export default function App() {
 
   // URL Input
   const [urlInput, setUrlInput] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
 
   // Settings Dialog
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -48,7 +50,7 @@ export default function App() {
   // Background Job Progress Overlay
   const [activeJob, setActiveJob] = useState(null); // { stage, progress, status }
   const [activeButton, setActiveButton] = useState(null); // 'import_local', 'import_url', 'transcribe', 'translate', 'isolate_bgm', 'generate_tts', 'export'
-  const [displaySubtitles, setDisplaySubtitles] = useState(true);
+  const [displaySubtitles, setDisplaySubtitles] = useState(false);
   const [aspectRatio, setAspectRatio] = useState('9:16');
   const [stats, setStats] = useState({ ram_total: 0, ram_used: 0, gpu_total: 0, gpu_used: 0, gpu_name: 'N/A' });
   const [customizerSettings, setCustomizerSettings] = useState({
@@ -69,7 +71,8 @@ export default function App() {
     sponsor_asset: '',
     sponsor_position: 'front',
     sponsor_time: 10,
-    sponsor_duration: 5
+    sponsor_duration: 5,
+    subtitle_bg_style: 'black'
   });
 
   // 1. Initial License Verification on Startup
@@ -242,6 +245,24 @@ export default function App() {
       setActiveButton(null);
     });
 
+    const unsubTtsPaused = wsService.on('tts_paused', (data) => {
+      setProjectData(data.project_data);
+      setActiveJob(null);
+      setActiveButton(null);
+    });
+
+    const unsubJobCancelled = wsService.on('job_cancelled', (data) => {
+      setActiveJob(null);
+      setActiveButton(null);
+    });
+
+    const unsubAutoEmotion = wsService.on('auto_emotion_completed', (data) => {
+      setProjectData(data.project_data);
+      setActiveJob(null);
+      setActiveButton(null);
+      alert("Successfully auto-classified emotions for all segments using Gemini API!");
+    });
+
     const unsubExported = (data) => {
       setActiveJob(null);
       setActiveButton(null);
@@ -285,6 +306,9 @@ export default function App() {
       unsubTranslated();
       unsubBgmIsolated();
       unsubTtsGenerated();
+      unsubTtsPaused();
+      unsubJobCancelled();
+      unsubAutoEmotion();
       wsService.off('exported', unsubExported);
       unsubProgress();
       unsubError();
@@ -323,6 +347,58 @@ export default function App() {
     }
   };
 
+  const handleImportDroppedFile = (filePath) => {
+    if (activeJob) return;
+    if (projectData?.video_path) {
+      const confirmReplace = window.confirm("Importing a new video will replace the current video and overwrite any existing subtitles. Do you want to proceed?");
+      if (!confirmReplace) return;
+    }
+    setActiveJob({ stage: 'importing', progress: 0, status: 'Copying file to workspace...' });
+    setActiveButton('import_local');
+    wsService.send('import_media', { local_path: filePath });
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDragEnter = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget)) {
+      setIsDragging(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      const ext = file.name.split('.').pop().toLowerCase();
+      const videoExtensions = ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', 'wmv', 'm4v'];
+      if (videoExtensions.includes(ext) || file.type.startsWith('video/')) {
+        if (file.path) {
+          handleImportDroppedFile(file.path);
+        } else {
+          alert("Could not read file path. Drag and drop file path is only supported in the desktop app.");
+        }
+      } else {
+        alert("Please drop a valid video file.");
+      }
+    }
+  };
+
+
   const handleImportUrl = () => {
     if (activeJob) return;
     if (projectData?.video_path) {
@@ -336,6 +412,11 @@ export default function App() {
   };
 
   const handleTranscribe = () => {
+    if (activeJob && (activeJob.stage === 'transcribing' || activeJob.stage === 'downloading_model')) {
+      wsService.send('cancel_job', { job_name: 'transcribe' });
+      setActiveJob({ stage: 'transcribing', progress: activeJob.progress, status: 'Cancelling transcription...' });
+      return;
+    }
     if (activeJob) return;
     if (projectData?.subtitles && projectData.subtitles.length > 0) {
       const confirmTranscribe = window.confirm("You have already transcribed this video. Do you want to re-transcribe it? This will overwrite your existing subtitles.");
@@ -348,6 +429,11 @@ export default function App() {
   };
 
   const handleTranslate = async () => {
+    if (activeJob && activeJob.stage === 'translating') {
+      wsService.send('cancel_job', { job_name: 'translate' });
+      setActiveJob({ stage: 'translating', progress: activeJob.progress, status: 'Cancelling translation...' });
+      return;
+    }
     if (activeJob) return;
     const apiKey = await getDecryptedKey();
     const model = localStorage.getItem('gemini_model') || 'gemini-3.1-flash-lite';
@@ -376,7 +462,35 @@ export default function App() {
     wsService.send('translate', { api_key: apiKey, model: model });
   };
 
+  const handleAutoEmotion = async () => {
+    if (activeJob) return;
+    const apiKey = await getDecryptedKey();
+    const model = localStorage.getItem('gemini_model') || 'gemini-3.1-flash-lite';
+
+    if (!apiKey) {
+      alert('Please enter your Gemini API key in Settings before auto-detecting emotions.');
+      setIsSettingsOpen(true);
+      return;
+    }
+
+    const isValid = localStorage.getItem('gemini_api_key_valid') === 'true';
+    if (!isValid) {
+      alert('Your Gemini API key is not validated. Please go to Settings, configure your key, and verify it is validated first.');
+      setIsSettingsOpen(true);
+      return;
+    }
+
+    setActiveJob({ stage: 'auto_emotion', progress: 0, status: 'Initiating auto-emotion classification...' });
+    setActiveButton('auto_emotion');
+    wsService.send('auto_emotion', { api_key: apiKey, model: model });
+  };
+
   const handleIsolateBgm = () => {
+    if (activeJob && activeJob.stage === 'isolating_bgm') {
+      wsService.send('cancel_job', { job_name: 'isolate_bgm' });
+      setActiveJob({ stage: 'isolating_bgm', progress: activeJob.progress, status: 'Cancelling BGM isolation...' });
+      return;
+    }
     if (activeJob) return;
     if (projectData?.bgm_path) {
       const confirmIsolate = window.confirm("You have already isolated the background music. Do you want to run BGM isolation again?");
@@ -388,13 +502,53 @@ export default function App() {
   };
 
   const handleGenerateTTS = () => {
+    console.log("handleGenerateTTS clicked. activeJob:", activeJob);
+    // If currently running, click to pause
+    if (activeJob && (activeJob.stage === 'generating_tts' || activeJob.stage === 'resuming_tts')) {
+      console.log("Sending cancel_job for generate_tts...");
+      wsService.send('cancel_job', { job_name: 'generate_tts' });
+      setActiveJob({ stage: 'generating_tts', progress: activeJob.progress, status: 'Pausing generation...' });
+      return;
+    }
+
     if (activeJob) return;
     if (!projectData || !projectData.subtitles) return;
-    const isAlreadyGenerated = projectData?.subtitles?.some(sub => sub.audio_path || sub.audio_status === 'ready');
-    if (isAlreadyGenerated) {
-      const confirmTTS = window.confirm("You have already generated the speech audio. Do you want to generate and overwrite it again?");
-      if (!confirmTTS) return;
+
+    const readySubs = projectData.subtitles.filter(sub => sub.audio_status === 'ready' && sub.audio_path);
+
+    if (readySubs.length > 0) {
+      if (readySubs.length < projectData.subtitles.length) {
+        // Partially completed project - offer resume or restart
+        const choice = window.confirm("You have partially generated audio. Click 'OK' to Resume from where you left off, or 'Cancel' to regenerate all audio from scratch.");
+        if (choice) {
+          // Resume (send as is)
+          setActiveJob({ stage: 'generating_tts', progress: Math.round((readySubs.length / projectData.subtitles.length) * 100), status: 'Resuming TTS generation...' });
+          setActiveButton('generate_tts');
+          wsService.send('generate_tts', { subtitles: projectData.subtitles });
+          return;
+        } else {
+          // Start from scratch (clear statuses first)
+          const resetSubs = projectData.subtitles.map(sub => ({ ...sub, audio_status: 'not_generated', audio_path: '' }));
+          setProjectData(prev => ({ ...prev, subtitles: resetSubs }));
+          setActiveJob({ stage: 'generating_tts', progress: 0, status: 'Initiating TTS generation...' });
+          setActiveButton('generate_tts');
+          wsService.send('generate_tts', { subtitles: resetSubs });
+          return;
+        }
+      } else {
+        // Fully completed project - prompt to overwrite
+        const confirmOverwrite = window.confirm("You have already generated all speech audio. Do you want to overwrite it and generate again from scratch?");
+        if (!confirmOverwrite) return;
+
+        const resetSubs = projectData.subtitles.map(sub => ({ ...sub, audio_status: 'not_generated', audio_path: '' }));
+        setProjectData(prev => ({ ...prev, subtitles: resetSubs }));
+        setActiveJob({ stage: 'generating_tts', progress: 0, status: 'Initiating TTS generation...' });
+        setActiveButton('generate_tts');
+        wsService.send('generate_tts', { subtitles: resetSubs });
+        return;
+      }
     }
+
     setActiveJob({ stage: 'generating_tts', progress: 0, status: 'Initiating TTS generation...' });
     setActiveButton('generate_tts');
     wsService.send('generate_tts', { subtitles: projectData.subtitles });
@@ -414,6 +568,11 @@ export default function App() {
   };
 
   const handleExportVideo = async () => {
+    if (activeJob && activeJob.stage === 'exporting') {
+      wsService.send('cancel_job', { job_name: 'export' });
+      setActiveJob({ stage: 'exporting', progress: activeJob.progress, status: 'Cancelling export...' });
+      return;
+    }
     if (activeJob) return;
     if (!window.electron) return;
     const destPath = await window.electron.selectExportVideo();
@@ -504,6 +663,58 @@ export default function App() {
       setIsSavingKey(false);
     }
   };
+
+  // Keyboard Shortcuts Effect
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const activeEl = document.activeElement;
+      if (activeEl && (
+        activeEl.tagName === 'INPUT' || 
+        activeEl.tagName === 'TEXTAREA' || 
+        activeEl.isContentEditable ||
+        activeEl.classList.contains('select-trigger')
+      )) {
+        return;
+      }
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setIsPlaying(prev => {
+          const next = !prev;
+          const video = document.querySelector('.main-video-element');
+          if (video) {
+            if (next) video.play().catch(err => console.error(err));
+            else video.pause();
+          }
+          return next;
+        });
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        const video = document.querySelector('.main-video-element');
+        if (video) {
+          const newTime = Math.min(video.duration, video.currentTime + 2);
+          video.currentTime = newTime;
+          setCurrentTime(newTime);
+        }
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        const video = document.querySelector('.main-video-element');
+        if (video) {
+          const newTime = Math.max(0, video.currentTime - 2);
+          video.currentTime = newTime;
+          setCurrentTime(newTime);
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') {
+        e.preventDefault();
+        handleSaveProject();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [projectData]);
 
   if (activationState === 'checking') {
     return (
@@ -596,7 +807,20 @@ export default function App() {
   }
 
   return (
-    <div className="app-container">
+    <div 
+      className="app-container"
+      onDragOver={handleDragOver}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isDragging && (
+        <div className="drag-drop-overlay">
+          <Upload size={48} />
+          <h2>Drop Video File Here</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: '14px', marginTop: '5px' }}>The video will import automatically.</p>
+        </div>
+      )}
       {/* Background neon glows */}
       <div className="glow-bg"></div>
       <div className="glow-bg-secondary"></div>
@@ -666,180 +890,224 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Workspace panels */}
-      <main className="workspace-grid">
-        <div className="grid-left">
-          <VideoPreview
-            videoUrl={getVideoSourceUrl()}
-            subtitles={projectData?.subtitles || []}
-            currentTime={currentTime}
-            onTimeUpdate={setCurrentTime}
-            setPlayingState={setIsPlaying}
-            displaySubtitles={displaySubtitles}
-            setDisplaySubtitles={setDisplaySubtitles}
-            aspectRatio={aspectRatio}
-            setAspectRatio={setAspectRatio}
-            customizerSettings={customizerSettings}
-          />
-          <VideoCustomizer
-            settings={customizerSettings}
-            onChange={(key, val) => setCustomizerSettings(prev => ({ ...prev, [key]: val }))}
-          />
+      {!projectData?.video_path ? (
+        <div className="welcome-dashboard glass-panel">
+          <div className="welcome-header">
+            <h2 className="gradient-text" style={{ background: 'linear-gradient(to right, var(--primary), var(--secondary))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', margin: 0 }}>Welcome to Khmer Dubber</h2>
+            <p style={{ marginTop: '12px' }}>High-performance AI Dubbing & Translation. Upload a local file or paste a link to get started.</p>
+          </div>
+          
+          <div className="dashboard-cards-grid">
+            <div className="dashboard-card upload-card" onClick={handleImportLocal}>
+              <Upload size={32} className="card-icon" />
+              <h3>Upload Local File</h3>
+              <p>Drag and drop a video file here, or click to browse your computer.</p>
+            </div>
+            
+            <div className="dashboard-card url-card" onClick={(e) => e.stopPropagation()}>
+              <LinkIcon size={32} className="card-icon" />
+              <h3>Translate from Link</h3>
+              <p>Paste a Chinese video URL (TikTok, Douyin, etc.) to download and import it.</p>
+              
+              <div className="dashboard-url-input-group">
+                <input
+                  type="text"
+                  placeholder="Paste video URL here..."
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  className="url-input"
+                />
+                <button className="btn btn-import" onClick={handleImportUrl} disabled={activeJob}>
+                  {activeButton === 'import_url' && activeJob ? (
+                    <Loader2 size={14} className="button-spinner spinner" />
+                  ) : (
+                    'Import'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
+      ) : (
+        <>
+          {/* Main Workspace panels */}
+          <main className="workspace-grid">
+            <div className="grid-left">
+              <VideoPreview
+                videoUrl={getVideoSourceUrl()}
+                subtitles={projectData?.subtitles || []}
+                currentTime={currentTime}
+                onTimeUpdate={setCurrentTime}
+                setPlayingState={setIsPlaying}
+                displaySubtitles={displaySubtitles}
+                setDisplaySubtitles={setDisplaySubtitles}
+                aspectRatio={aspectRatio}
+                setAspectRatio={setAspectRatio}
+                customizerSettings={customizerSettings}
+              />
+              <VideoCustomizer
+                settings={customizerSettings}
+                onChange={(key, val) => setCustomizerSettings(prev => ({ ...prev, [key]: val }))}
+              />
+            </div>
 
-        <div className="grid-right">
-          <SubtitleTable
-            subtitles={projectData?.subtitles || []}
-            onUpdateSubtitles={handleUpdateSubtitles}
-            onRowSelect={handleRowSelect}
-            activeRowId={activeRowId}
-          />
-        </div>
-      </main>
+            <div className="grid-right">
+              <SubtitleTable
+                subtitles={projectData?.subtitles || []}
+                onUpdateSubtitles={handleUpdateSubtitles}
+                onRowSelect={handleRowSelect}
+                activeRowId={activeRowId}
+                onAutoEmotion={handleAutoEmotion}
+              />
+            </div>
+          </main>
 
-      {/* Bottom Timeline Section */}
-      <section className="timeline-container-wrapper">
-        <TimelineEditor
-          subtitles={projectData?.subtitles || []}
-          bgmPath={projectData?.bgm_path}
-          currentTime={currentTime}
-          onTimeUpdate={setCurrentTime}
-          isPlaying={isPlaying}
-          activeRowId={activeRowId}
-          onRowSelect={handleRowSelect}
-        />
-      </section>
-
-      {/* Action Footer */}
-      <footer className="footer-action-bar glass-panel">
-        <div className="footer-left">
-          <div className="url-import-wrapper">
-            <Globe className="url-icon" />
-            <Input
-              type="text"
-              placeholder="Paste Chinese video URL (TikTok, Douyin)..."
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              className="url-input"
+          {/* Bottom Timeline Section */}
+          <section className="timeline-container-wrapper">
+            <TimelineEditor
+              subtitles={projectData?.subtitles || []}
+              bgmPath={projectData?.bgm_path}
+              currentTime={currentTime}
+              onTimeUpdate={setCurrentTime}
+              isPlaying={isPlaying}
+              activeRowId={activeRowId}
+              onRowSelect={handleRowSelect}
             />
-             <button className="btn btn-import w-[40%]" onClick={handleImportUrl} disabled={activeJob}>
-              {activeButton === 'import_url' && activeJob ? (
-                <>
-                  <Loader2 size={14} className="button-spinner spinner" />
-                  <span>Importing ({activeJob.progress}%)</span>
-                </>
+          </section>
+        </>
+      )}
+
+      {projectData?.video_path && (
+        <footer className="footer-action-bar glass-panel">
+          <div className="footer-left">
+            <div className="url-import-wrapper">
+              <Globe className="url-icon" />
+              <Input
+                type="text"
+                placeholder="Paste Chinese video URL (TikTok, Douyin)..."
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                className="url-input"
+              />
+               <button className="btn btn-import w-[40%]" onClick={handleImportUrl} disabled={activeJob}>
+                {activeButton === 'import_url' && activeJob ? (
+                  <>
+                    <Loader2 size={14} className="button-spinner spinner" />
+                    <span>Importing ({activeJob.progress}%)</span>
+                  </>
+                ) : (
+                  'Import URL'
+                )}
+              </button>
+            </div>
+
+            <button className="btn btn-import" onClick={handleImportLocal} disabled={activeJob}>
+              {activeButton === 'import_local' && activeJob ? (
+                <Loader2 size={14} className="button-spinner spinner" />
               ) : (
-                'Import URL'
+                <Upload size={14} />
               )}
+              <span>
+                {activeButton === 'import_local' && activeJob
+                  ? `Copying (${activeJob.progress}%)`
+                  : 'Upload Local File'}
+              </span>
             </button>
           </div>
 
-          <button className="btn btn-import" onClick={handleImportLocal} disabled={activeJob}>
-            {activeButton === 'import_local' && activeJob ? (
-              <Loader2 size={14} className="button-spinner spinner" />
-            ) : (
-              <Upload size={14} />
-            )}
-            <span>
-              {activeButton === 'import_local' && activeJob
-                ? `Copying (${activeJob.progress}%)`
-                : 'Upload Local File'}
-            </span>
-          </button>
-        </div>
+          <div className="footer-right">
+            <button
+              className="btn btn-transcribe"
+              onClick={handleTranscribe}
+              disabled={!projectData?.video_path || (activeJob && activeJob.stage !== 'transcribing' && activeJob.stage !== 'downloading_model')}
+            >
+              {activeJob && (activeJob.stage === 'transcribing' || activeJob.stage === 'downloading_model') ? (
+                <>
+                  <Pause size={14} className="button-spinner spinner" />
+                  <span>Pause Transcribing ({activeJob.progress}%)</span>
+                </>
+              ) : (
+                <>
+                  <Film size={14} />
+                  <span>Transcribe Video</span>
+                </>
+              )}
+            </button>
 
-        <div className="footer-right">
-          <button
-            className="btn btn-transcribe"
-            onClick={handleTranscribe}
-            disabled={!projectData?.video_path || activeJob}
-          >
-            {activeButton === 'transcribe' && activeJob ? (
-              <>
-                <Loader2 size={14} className="button-spinner spinner" />
-                <span>Transcribing ({activeJob.progress}%)</span>
-              </>
-            ) : (
-              <>
-                <Film size={14} />
-                <span>Transcribe Video</span>
-              </>
-            )}
-          </button>
+            <button
+              className="btn btn-translate"
+              onClick={handleTranslate}
+              disabled={!projectData?.subtitles || projectData.subtitles.length === 0 || (activeJob && activeJob.stage !== 'translating')}
+            >
+              {activeJob && activeJob.stage === 'translating' ? (
+                <>
+                  <Pause size={14} className="button-spinner spinner" />
+                  <span>Pause Translating ({activeJob.progress}%)</span>
+                </>
+              ) : (
+                <>
+                  <Lock size={14} />
+                  <span>Translate Subtitles</span>
+                </>
+              )}
+            </button>
 
-          <button
-            className="btn btn-translate"
-            onClick={handleTranslate}
-            disabled={!projectData?.subtitles || projectData.subtitles.length === 0 || activeJob}
-          >
-            {activeButton === 'translate' && activeJob ? (
-              <>
-                <Loader2 size={14} className="button-spinner spinner" />
-                <span>Translating ({activeJob.progress}%)</span>
-              </>
-            ) : (
-              <>
-                <Lock size={14} />
-                <span>Translate Subtitles</span>
-              </>
-            )}
-          </button>
+            <button
+              className="btn btn-isolate"
+              onClick={handleIsolateBgm}
+              disabled={!projectData?.video_path || (activeJob && activeJob.stage !== 'isolating_bgm')}
+            >
+              {activeJob && activeJob.stage === 'isolating_bgm' ? (
+                <>
+                  <Pause size={14} className="button-spinner spinner" />
+                  <span>Pause BGM ({activeJob.progress}%)</span>
+                </>
+              ) : (
+                <>
+                  <Music size={14} />
+                  <span>Isolate BGM</span>
+                </>
+              )}
+            </button>
 
-          <button
-            className="btn btn-isolate"
-            onClick={handleIsolateBgm}
-            disabled={!projectData?.video_path || activeJob}
-          >
-            {activeButton === 'isolate_bgm' && activeJob ? (
-              <>
-                <Loader2 size={14} className="button-spinner spinner" />
-                <span>Isolating BGM ({activeJob.progress}%)</span>
-              </>
-            ) : (
-              <>
-                <Music size={14} />
-                <span>Isolate BGM</span>
-              </>
-            )}
-          </button>
+            <button
+              className="btn btn-generate"
+              onClick={handleGenerateTTS}
+              disabled={!projectData?.subtitles || projectData.subtitles.length === 0 || (activeJob && activeJob.stage !== 'generating_tts')}
+            >
+              {activeJob && activeJob.stage === 'generating_tts' ? (
+                <>
+                  <Pause size={14} className="button-spinner spinner" />
+                  <span>Pause Generating ({activeJob.progress}%)</span>
+                </>
+              ) : (
+                <>
+                  <VolumeX size={14} />
+                  <span>Generate Audio</span>
+                </>
+              )}
+            </button>
 
-          <button
-            className="btn btn-generate"
-            onClick={handleGenerateTTS}
-            disabled={!projectData?.subtitles || projectData.subtitles.length === 0 || activeJob}
-          >
-            {activeButton === 'generate_tts' && activeJob ? (
-              <>
-                <Loader2 size={14} className="button-spinner spinner" />
-                <span>Generating ({activeJob.progress}%)</span>
-              </>
-            ) : (
-              <>
-                <VolumeX size={14} />
-                <span>Generate Audio</span>
-              </>
-            )}
-          </button>
-
-          <button
-            className="btn btn-primary"
-            onClick={handleExportVideo}
-            disabled={!projectData?.video_path || activeJob}
-          >
-            {activeButton === 'export' && activeJob ? (
-              <>
-                <Loader2 size={14} className="button-spinner spinner" />
-                <span>Exporting ({activeJob.progress}%)</span>
-              </>
-            ) : (
-              <>
-                <Play size={14} fill="currentColor" />
-                <span>Export Video</span>
-              </>
-            )}
-          </button>
-        </div>
-      </footer>
+            <button
+              className="btn btn-primary"
+              onClick={handleExportVideo}
+              disabled={!projectData?.video_path || (activeJob && activeJob.stage !== 'exporting')}
+            >
+              {activeJob && activeJob.stage === 'exporting' ? (
+                <>
+                  <Pause size={14} className="button-spinner spinner" />
+                  <span>Pause Export ({activeJob.progress}%)</span>
+                </>
+              ) : (
+                <>
+                  <Play size={14} fill="currentColor" />
+                  <span>Export Video</span>
+                </>
+              )}
+            </button>
+          </div>
+        </footer>
+      )}
 
       {/* Settings Dialog Overlay */}
       <Settings

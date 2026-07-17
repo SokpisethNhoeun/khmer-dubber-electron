@@ -54,6 +54,18 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
     except Exception:
         pass
         
+    # Check if original video has an audio track
+    has_video_audio = False
+    try:
+        res = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type",
+            "-of", "default=noprint_wrappers=1:nokey=1", video_path
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        if res.returncode == 0 and "audio" in res.stdout:
+            has_video_audio = True
+    except Exception:
+        pass
+
     # Check if BGM exists. If not, fallback to original video audio or silence
     has_bgm = os.path.exists(bgm_path)
     
@@ -68,21 +80,27 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
             if os.path.exists(full_audio_path):
                 valid_subs.append((sub, full_audio_path))
                 
-    # Inputs:
-    # 0: video file
-    # 1: BGM audio file
-    # 2..N: TTS segments
+    # Inputs list construction:
+    # 0: source video
     inputs = ["-i", video_path]
+    
+    bgm_source = None
     if has_bgm:
         inputs += ["-i", bgm_path]
-    else:
+        bgm_source = "[1:a]"
+    elif not has_video_audio:
         inputs += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+        bgm_source = "[1:a]"
+    else:
+        bgm_source = "[0:a]"
         
+    # Add TTS segment inputs
     for _, audio_path in valid_subs:
         inputs += ["-i", audio_path]
         
-    # Add branding overlays and sponsor assets as inputs
-    next_input_idx = 2 + len(valid_subs)
+    # Dynamic TTS and branding input index calculations
+    tts_start_idx = 2 if (has_bgm or not has_video_audio) else 1
+    next_input_idx = tts_start_idx + len(valid_subs)
     
     logo_input_idx = None
     if customizer and customizer.get("logo_path"):
@@ -102,25 +120,31 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
         
     # Build filter complex for audio mixing
     filter_complex = []
-    mix_inputs = []
     
-    # BGM is input index 1. Apply volume reduction of -14dB to BGM track to prevent drowning voice.
-    filter_complex.append("[1:a]volume=-14dB[bgm_ducked]")
-    mix_inputs.append("[bgm_ducked]") 
-    
-    for idx, (sub, _) in enumerate(valid_subs):
-        input_idx = 2 + idx
-        start_seconds = parse_timestamp(sub["start"])
-        delay_ms = int(start_seconds * 1000)
-        if delay_ms < 0:
-            delay_ms = 0
-            
-        filter_complex.append(f"[{input_idx}:a]adelay={delay_ms}|{delay_ms}[delay{idx}]")
-        mix_inputs.append(f"[delay{idx}]")
+    if not valid_subs:
+        # No TTS segments to mix. Just use the background source at full volume.
+        filter_complex.append(f"{bgm_source}aresample=44100,aformat=channel_layouts=stereo[mixed_audio]")
+    else:
+        mix_inputs = []
+        # Background source ducked by -14dB to let TTS voice be heard clearly
+        filter_complex.append(f"{bgm_source}aresample=44100,aformat=channel_layouts=stereo,volume=-14dB[bgm_ducked]")
+        mix_inputs.append("[bgm_ducked]")
         
-    num_mix_inputs = len(mix_inputs)
-    mix_filter = "".join(mix_inputs) + f"amix=inputs={num_mix_inputs}:duration=first:dropout_transition=2[mixed_audio]"
-    filter_complex.append(mix_filter)
+        for idx, (sub, _) in enumerate(valid_subs):
+            input_idx = tts_start_idx + idx
+            start_seconds = parse_timestamp(sub["start"])
+            delay_ms = int(start_seconds * 1000)
+            if delay_ms < 0:
+                delay_ms = 0
+                
+            # Resample input TTS audio to 44100Hz, stereo and delay it
+            filter_complex.append(f"[{input_idx}:a]aresample=44100,aformat=channel_layouts=stereo,adelay={delay_ms}:all=1[delay{idx}]")
+            mix_inputs.append(f"[delay{idx}]")
+            
+        num_mix_inputs = len(mix_inputs)
+        # Use normalize=0 to prevent volume scaling down when multiple inputs are mixed
+        mix_filter = "".join(mix_inputs) + f"amix=inputs={num_mix_inputs}:duration=first:dropout_transition=2:normalize=0[mixed_audio]"
+        filter_complex.append(mix_filter)
     
     # Video Customizer filter chain
     v_stream = "0:v"
@@ -151,7 +175,26 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
         srt_path = os.path.join(exports_dir, "temp_subs.srt")
         generate_srt(subtitles, srt_path)
         escaped_srt_path = srt_path.replace("\\", "/").replace(":", "\\:")
-        video_filters.append(f"subtitles='{escaped_srt_path}':force_style='FontName=Noto Sans Khmer,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=1'")
+        
+        # Determine subtitle styling based on customizer options
+        sub_bg_style = customizer.get("subtitle_bg_style", "black") if customizer else "black"
+        if sub_bg_style == "transparent":
+            # Transparent style: Outline text only, no box background
+            style_expr = "FontName=Noto Sans Khmer,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1"
+        elif sub_bg_style == "blur":
+            # Semi-transparent background box
+            style_expr = "FontName=Noto Sans Khmer,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H88000000,BorderStyle=3,Outline=1,Shadow=1"
+        else:
+            # Default 'black': Solid black background box
+            style_expr = "FontName=Noto Sans Khmer,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=1"
+            
+        # Determine font directory for libass fontselect helper
+        khmer_font_dir = os.path.dirname(khmer_font_path) if os.path.exists(khmer_font_path) else None
+        if khmer_font_dir:
+            escaped_font_dir = khmer_font_dir.replace("\\", "/").replace(":", "\\:")
+            video_filters.append(f"subtitles='{escaped_srt_path}':fontsdir='{escaped_font_dir}':force_style='{style_expr}'")
+        else:
+            video_filters.append(f"subtitles='{escaped_srt_path}':force_style='{style_expr}'")
         
     # Parse customizer options
     logo_opacity = float(customizer.get("logo_opacity", 0.85)) if customizer else 0.85

@@ -24,6 +24,36 @@ export default function VideoPreview({ videoUrl, subtitles, currentTime, onTimeU
   const activeAudioRef = useRef(null);
   const activeAudioSubIdRef = useRef(null);
 
+  const getSubtitleStyle = () => {
+    const bgStyle = customizerSettings?.subtitle_bg_style || 'black';
+    if (bgStyle === 'transparent') {
+      return {
+        backgroundColor: 'transparent',
+        border: 'none',
+        backdropFilter: 'none',
+        boxShadow: 'none',
+        textShadow: '2px 2px 0 #000, -1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 0px 3px 6px rgba(0,0,0,0.9)',
+        fontSize: '16px',
+        fontWeight: 'bold'
+      };
+    } else if (bgStyle === 'blur') {
+      return {
+        backgroundColor: 'rgba(17, 20, 28, 0.55)',
+        backdropFilter: 'blur(10px)',
+        border: '1px solid rgba(255, 255, 255, 0.15)',
+        boxShadow: '0 6px 20px rgba(0,0,0,0.6)',
+      };
+    } else {
+      // 'black' default style
+      return {
+        backgroundColor: 'rgba(0, 0, 0, 0.92)',
+        backdropFilter: 'blur(3px)',
+        border: '1px solid rgba(255, 255, 255, 0.08)',
+        boxShadow: '0 4px 15px rgba(0,0,0,0.5)',
+      };
+    }
+  };
+
   // Handle external playhead adjustments (from Timeline)
   useEffect(() => {
     if (videoRef.current && Math.abs(videoRef.current.currentTime - currentTime) > 0.3) {
@@ -457,7 +487,7 @@ export default function VideoPreview({ videoUrl, subtitles, currentTime, onTimeU
             
             {activeSub && displaySubtitles && (
               <div className="subtitle-overlay">
-                <span className="subtitle-text">{activeSub}</span>
+                <span className="subtitle-text" style={getSubtitleStyle()}>{activeSub}</span>
               </div>
             )}
           </>
