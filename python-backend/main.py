@@ -81,9 +81,9 @@ try:
             shutil.copy2(bundled_whisper_path, local_whisper_path)
             
     # 2. Copy bundled Demucs 'htdemucs' model checkpoint
-    bundled_demucs_path = os.path.join(base_dir, "bin", "checkpoints", "955717e8-872c5565.th")
+    bundled_demucs_path = os.path.join(base_dir, "bin", "checkpoints", "955717e8-8726e21a.th")
     local_demucs_dir = os.path.join(os.path.expanduser("~"), ".cache", "torch", "hub", "checkpoints")
-    local_demucs_path = os.path.join(local_demucs_dir, "955717e8-872c5565.th")
+    local_demucs_path = os.path.join(local_demucs_dir, "955717e8-8726e21a.th")
     
     if os.path.exists(bundled_demucs_path):
         os.makedirs(local_demucs_dir, exist_ok=True)

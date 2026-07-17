@@ -53,7 +53,7 @@ jobs:
 
         Write-Host "Downloading Demucs htdemucs checkpoint..."
         New-Item -ItemType Directory -Force -Path "python-backend/bin/checkpoints"
-        Invoke-WebRequest -Uri "https://dl.fbaipublicfiles.com/demucs/hybridtransformer/955717e8-872c5565.th" -OutFile "python-backend/bin/checkpoints/955717e8-872c5565.th"
+        Invoke-WebRequest -Uri "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th" -OutFile "python-backend/bin/checkpoints/955717e8-8726e21a.th"
         Write-Host "Demucs checkpoint successfully bundled."
 
 
