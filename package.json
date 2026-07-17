@@ -16,6 +16,7 @@
     "@radix-ui/react-select": "^2.3.3",
     "@tailwindcss/vite": "^4.3.3",
     "clsx": "^2.1.1",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^0.471.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
@@ -39,6 +40,11 @@
     "productName": "Khmer Video Dubber",
     "directories": {
       "output": "dist-electron"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "SokpisethNhoeun",
+      "repo": "khmer-dubber-electron"
     },
     "files": [
       "dist/**/*",

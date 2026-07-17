@@ -11,5 +11,6 @@ contextBridge.exposeInMainWorld('electron', {
   decryptString: (str) => ipcRenderer.invoke('decrypt-string', str),
   getTempWorkspace: () => ipcRenderer.invoke('get-temp-workspace'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
-  getHostname: () => ipcRenderer.invoke('get-hostname')
+  getHostname: () => ipcRenderer.invoke('get-hostname'),
+  exportLogs: () => ipcRenderer.invoke('export-logs')
 });

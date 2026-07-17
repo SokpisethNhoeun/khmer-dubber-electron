@@ -3,6 +3,30 @@ app.commandLine.appendSwitch('ignore-certificate-errors');
 const path = require('path');
 const { spawn } = require('child_process');
 const net = require('net');
+const fs = require('fs');
+const { autoUpdater } = require('electron-updater');
+
+// Initialize logs file
+const logFilePath = path.join(app.getPath('userData'), 'app.log');
+const logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
+
+function logToFile(type, message) {
+  const cleanMsg = message.toString().trim();
+  const logMessage = `[${new Date().toISOString()}] [${type}] ${cleanMsg}\n`;
+  try {
+    logStream.write(logMessage);
+  } catch (e) {
+    console.error('Failed to write log to file', e);
+  }
+  if (type === 'ERROR') {
+    console.error(`[${type}] ${cleanMsg}`);
+  } else {
+    console.log(`[${type}] ${cleanMsg}`);
+  }
+}
+
+// Log initial startup info
+logToFile('INFO', `App starting. UserData path: ${app.getPath('userData')}`);
 
 let mainWindow;
 let pythonProcess = null;
@@ -38,7 +62,7 @@ function startPythonBackend() {
     args = [BACKEND_PORT.toString()];
   }
 
-  console.log(`Starting Python backend: ${execPath} ${args.join(' ')}`);
+  logToFile('INFO', `Starting Python backend: ${execPath} ${args.join(' ')}`);
 
   pythonProcess = spawn(execPath, args, {
     cwd: path.dirname(execPath),
@@ -47,15 +71,15 @@ function startPythonBackend() {
   });
 
   pythonProcess.stdout.on('data', (data) => {
-    console.log(`[Python Stdout]: ${data.toString().trim()}`);
+    logToFile('PYTHON_STDOUT', data);
   });
 
   pythonProcess.stderr.on('data', (data) => {
-    console.error(`[Python Stderr]: ${data.toString().trim()}`);
+    logToFile('PYTHON_STDERR', data);
   });
 
   pythonProcess.on('close', (code) => {
-    console.log(`Python backend exited with code ${code}`);
+    logToFile('INFO', `Python backend exited with code ${code}`);
   });
 }
 
@@ -176,13 +200,36 @@ ipcMain.handle('select-export-video', async () => {
   return result.filePath;
 });
 
+ipcMain.handle('export-logs', async () => {
+  const defaultPath = path.join(app.getPath('desktop'), 'khmer-video-dubber-logs.txt');
+  const result = await dialog.showSaveDialog({
+    title: 'Export Application Logs',
+    defaultPath: defaultPath,
+    filters: [{ name: 'Text Files', extensions: ['txt'] }]
+  });
+  
+  if (result.canceled) return { success: false };
+  
+  try {
+    if (fs.existsSync(logFilePath)) {
+      fs.copyFileSync(logFilePath, result.filePath);
+    } else {
+      fs.writeFileSync(result.filePath, 'No logs recorded yet.');
+    }
+    return { success: true, path: result.filePath };
+  } catch (err) {
+    logToFile('ERROR', `Failed to export logs: ${err.message}`);
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle('encrypt-string', async (event, plainText) => {
   try {
     if (safeStorage.isEncryptionAvailable()) {
       return safeStorage.encryptString(plainText).toString('base64');
     }
   } catch (err) {
-    console.error('safeStorage encryption failed, falling back to plaintext:', err);
+    logToFile('ERROR', `safeStorage encryption failed, falling back to plaintext: ${err.message}`);
   }
   return plainText;
 });
@@ -194,7 +241,7 @@ ipcMain.handle('decrypt-string', async (event, encryptedBase64) => {
       return safeStorage.decryptString(buffer);
     }
   } catch (err) {
-    console.error('safeStorage decryption failed, returning encrypted data:', err);
+    logToFile('ERROR', `safeStorage decryption failed, returning encrypted data: ${err.message}`);
   }
   return encryptedBase64;
 });
@@ -203,7 +250,7 @@ ipcMain.handle('open-external', async (event, url) => {
   try {
     await shell.openExternal(url);
   } catch (err) {
-    console.error('Failed to open external link:', err);
+    logToFile('ERROR', `Failed to open external link: ${err.message}`);
   }
 });
 
@@ -236,7 +283,7 @@ ipcMain.handle('get-temp-workspace', async () => {
       }
     }
   } catch (err) {
-    console.error('Failed to clean up old temp workspaces:', err);
+    logToFile('ERROR', `Failed to clean up old temp workspaces: ${err.message}`);
   }
 
   // 2. Return a single fixed draft directory for startup
@@ -248,13 +295,22 @@ app.whenReady().then(() => {
   startPythonBackend();
   checkBackendReady((ready) => {
     if (ready) {
-      console.log('Python backend is up and running. Launching Electron UI...');
+      logToFile('INFO', 'Python backend is up and running. Launching Electron UI...');
       createWindow();
     } else {
-      console.error('Failed to connect to Python backend. Launching UI anyway...');
+      logToFile('ERROR', 'Failed to connect to Python backend. Launching UI anyway...');
       createWindow();
     }
   });
+
+  // Check for updates on startup in production
+  if (!isDev) {
+    try {
+      autoUpdater.checkForUpdatesAndNotify();
+    } catch (err) {
+      logToFile('ERROR', `Auto-updater error on startup: ${err.message}`);
+    }
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -269,7 +325,7 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   if (pythonProcess) {
-    console.log('Terminating Python backend sidecar...');
+    logToFile('INFO', 'Terminating Python backend sidecar...');
     pythonProcess.kill();
   }
 });

@@ -305,41 +305,71 @@ export default function Settings({ isOpen, onClose }) {
             <p className="settings-hint" style={{ marginTop: '4px', marginBottom: '8px' }}>
               If you have questions, need license key assistance, or encountered issues, please contact the developer on Telegram.
             </p>
-            <a 
-              href="https://t.me/nhoeunsokpiseth" 
-              onClick={(e) => {
-                e.preventDefault();
-                if (window.electron && window.electron.openExternal) {
-                  window.electron.openExternal('https://t.me/nhoeunsokpiseth');
-                } else {
-                  window.open('https://t.me/nhoeunsokpiseth', '_blank');
-                }
-              }}
-              style={{ 
-                display: 'inline-flex', 
-                alignItems: 'center', 
-                gap: '8px', 
-                color: 'var(--primary)', 
-                textDecoration: 'none', 
-                fontWeight: '500',
-                fontSize: '14px',
-                padding: '6px 12px',
-                borderRadius: '6px',
-                background: 'rgba(var(--primary-rgb), 0.1)',
-                border: '1px solid rgba(var(--primary-rgb), 0.2)',
-                transition: 'all 0.2s ease',
-                width: 'fit-content'
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(var(--primary-rgb), 0.15)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'rgba(var(--primary-rgb), 0.1)';
-              }}
-            >
-              <Send size={14} />
-              Contact me on Telegram (@nhoeunsokpiseth)
-            </a>
+            <div style={{ marginTop: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <a 
+                href="https://t.me/nhoeunsokpiseth" 
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (window.electron && window.electron.openExternal) {
+                    window.electron.openExternal('https://t.me/nhoeunsokpiseth');
+                  } else {
+                    window.open('https://t.me/nhoeunsokpiseth', '_blank');
+                  }
+                }}
+                style={{ 
+                  display: 'inline-flex', 
+                  alignItems: 'center', 
+                  gap: '8px', 
+                  color: 'var(--primary)', 
+                  textDecoration: 'none', 
+                  fontWeight: '500',
+                  fontSize: '14px',
+                  padding: '6px 12px',
+                  borderRadius: '6px',
+                  background: 'rgba(var(--primary-rgb), 0.1)',
+                  border: '1px solid rgba(var(--primary-rgb), 0.2)',
+                  transition: 'all 0.2s ease',
+                  width: 'fit-content'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(var(--primary-rgb), 0.15)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(var(--primary-rgb), 0.1)';
+                }}
+              >
+                <Send size={14} />
+                Contact me on Telegram (@nhoeunsokpiseth)
+              </a>
+
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={async () => {
+                  if (window.electron && typeof window.electron.exportLogs === 'function') {
+                    const res = await window.electron.exportLogs();
+                    if (res.success) {
+                      alert(`Logs exported successfully to:\n${res.path}`);
+                    } else if (res.error) {
+                      alert(`Failed to export logs: ${res.error}`);
+                    }
+                  } else {
+                    alert('Log export is only available in the desktop app.');
+                  }
+                }}
+                style={{ 
+                  whiteSpace: 'nowrap', 
+                  padding: '6px 12px', 
+                  height: 'unset', 
+                  display: 'inline-flex', 
+                  alignItems: 'center', 
+                  gap: '6px',
+                  cursor: 'pointer'
+                }}
+              >
+                Export Support Logs
+              </button>
+            </div>
           </div>
 
           {saveStatus === 'error' && (
