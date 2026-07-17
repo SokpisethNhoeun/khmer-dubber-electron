@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Plus, Trash2, Edit2, Search, BarChart2, Check, X, Play } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Plus, Trash2, Edit2, Search, BarChart2, Check, X, Play, Pause } from 'lucide-react';
 import { Input } from '../ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import './SubtitleTable.css';
@@ -12,13 +12,41 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
   const [replaceText, setReplaceText] = useState('');
   const [stats, setStats] = useState(null);
 
-  const handlePlayAudioPreview = (audioPath) => {
-    const url = `http://127.0.0.1:9847/files/${audioPath}?t=${Date.now()}`;
-    const audio = new Audio(url);
-    audio.play().catch(err => {
-      console.error("Failed to play audio preview:", err);
-      alert("Could not load audio preview. Make sure backend is active and the audio file exists.");
-    });
+  const [playingAudioId, setPlayingAudioId] = useState(null);
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const audioRef = useRef(null);
+
+  const handlePlayAudioPreview = (subId, audioPath) => {
+    if (playingAudioId === subId) {
+      if (audioRef.current) {
+        if (isPlayingAudio) {
+          audioRef.current.pause();
+          setIsPlayingAudio(false);
+        } else {
+          audioRef.current.play().catch(err => console.error(err));
+          setIsPlayingAudio(true);
+        }
+      }
+    } else {
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      const url = `http://127.0.0.1:9847/files/${audioPath}?t=${Date.now()}`;
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      setPlayingAudioId(subId);
+      setIsPlayingAudio(true);
+      audio.play().catch(err => {
+        console.error("Failed to play audio preview:", err);
+        alert("Could not load audio preview. Make sure backend is active and the audio file exists.");
+        setPlayingAudioId(null);
+        setIsPlayingAudio(false);
+      });
+      audio.onended = () => {
+        setPlayingAudioId(null);
+        setIsPlayingAudio(false);
+      };
+    }
   };
 
   const handleRowClick = (sub) => {
@@ -275,28 +303,32 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
                       <span className={`status-badge ${sub.audio_status}`} style={{ margin: 0 }}>
                         {sub.audio_status.replace('_', ' ')}
                       </span>
-                      {sub.audio_status === 'ready' && sub.audio_path && (
+                       {sub.audio_status === 'ready' && sub.audio_path && (
                         <button
                           type="button"
                           className="row-action-btn play-audio-preview"
                           style={{
                             padding: '4px',
-                            background: 'var(--primary-glow)',
-                            border: '1px solid var(--primary)',
+                            background: playingAudioId === sub.id && isPlayingAudio ? 'rgba(239, 68, 68, 0.15)' : 'var(--primary-glow)',
+                            border: playingAudioId === sub.id && isPlayingAudio ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid var(--primary)',
                             borderRadius: '4px',
                             cursor: 'pointer',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            color: 'var(--primary)'
+                            color: playingAudioId === sub.id && isPlayingAudio ? '#ef4444' : 'var(--primary)'
                           }}
                           onClick={(e) => {
                             e.stopPropagation();
-                            handlePlayAudioPreview(sub.audio_path);
+                            handlePlayAudioPreview(sub.id, sub.audio_path);
                           }}
-                          title="Play Voice Preview"
+                          title={playingAudioId === sub.id && isPlayingAudio ? "Pause Voice Preview" : "Play Voice Preview"}
                         >
-                          <Play size={12} fill="currentColor" />
+                          {playingAudioId === sub.id && isPlayingAudio ? (
+                            <Pause size={12} fill="currentColor" />
+                          ) : (
+                            <Play size={12} fill="currentColor" />
+                          )}
                         </button>
                       )}
                     </div>

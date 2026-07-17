@@ -33,6 +33,19 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
 
+    - name: Download and Bundle FFmpeg for Windows
+      shell: pwsh
+      run: |
+        Write-Host "Downloading FFmpeg..."
+        Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile "ffmpeg.zip"
+        Write-Host "Extracting FFmpeg..."
+        Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg_temp"
+        New-Item -ItemType Directory -Force -Path "python-backend/bin"
+        Copy-Item -Path "ffmpeg_temp/ffmpeg-master-*/bin/ffmpeg.exe" -Destination "python-backend/bin/"
+        Copy-Item -Path "ffmpeg_temp/ffmpeg-master-*/bin/ffprobe.exe" -Destination "python-backend/bin/"
+        Remove-Item -Recurse -Force "ffmpeg.zip", "ffmpeg_temp"
+        Write-Host "FFmpeg successfully bundled."
+
     - name: Build Python backend binary
       shell: cmd
       run: |

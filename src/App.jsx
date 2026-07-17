@@ -722,7 +722,7 @@ export default function App() {
               onChange={(e) => setUrlInput(e.target.value)}
               className="url-input"
             />
-            <button className="btn btn-secondary w-[40%]" onClick={handleImportUrl} disabled={activeJob}>
+             <button className="btn btn-import w-[40%]" onClick={handleImportUrl} disabled={activeJob}>
               {activeButton === 'import_url' && activeJob ? (
                 <>
                   <Loader2 size={14} className="button-spinner spinner" />
@@ -734,7 +734,7 @@ export default function App() {
             </button>
           </div>
 
-          <button className="btn btn-secondary" onClick={handleImportLocal} disabled={activeJob}>
+          <button className="btn btn-import" onClick={handleImportLocal} disabled={activeJob}>
             {activeButton === 'import_local' && activeJob ? (
               <Loader2 size={14} className="button-spinner spinner" />
             ) : (
@@ -750,7 +750,7 @@ export default function App() {
 
         <div className="footer-right">
           <button
-            className="btn btn-secondary"
+            className="btn btn-transcribe"
             onClick={handleTranscribe}
             disabled={!projectData?.video_path || activeJob}
           >
@@ -768,7 +768,7 @@ export default function App() {
           </button>
 
           <button
-            className="btn btn-secondary"
+            className="btn btn-translate"
             onClick={handleTranslate}
             disabled={!projectData?.subtitles || projectData.subtitles.length === 0 || activeJob}
           >
@@ -786,7 +786,7 @@ export default function App() {
           </button>
 
           <button
-            className="btn btn-secondary"
+            className="btn btn-isolate"
             onClick={handleIsolateBgm}
             disabled={!projectData?.video_path || activeJob}
           >
@@ -804,7 +804,7 @@ export default function App() {
           </button>
 
           <button
-            className="btn btn-secondary"
+            className="btn btn-generate"
             onClick={handleGenerateTTS}
             disabled={!projectData?.subtitles || projectData.subtitles.length === 0 || activeJob}
           >
