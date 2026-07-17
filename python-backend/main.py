@@ -682,5 +682,13 @@ async def websocket_endpoint(websocket: WebSocket):
         stats_task.cancel()
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    if len(sys.argv) > 2 and sys.argv[1] == "-m" and sys.argv[2] == "demucs.separate":
+        import demucs.separate
+        # Modify sys.argv to remove the "-m" and "demucs.separate" arguments
+        # so demucs.separate parses the remaining CLI arguments correctly
+        sys.argv = [sys.argv[0]] + sys.argv[3:]
+        demucs.separate.main()
+    else:
+        port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+        uvicorn.run(app, host="127.0.0.1", port=port)
+
