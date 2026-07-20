@@ -157,7 +157,7 @@ def batch_detect_gender(video_path, subtitles, ffmpeg_path=None):
     if ffmpeg_path is None:
         ffmpeg_path = get_ffmpeg_path()
         
-    temp_full_wav = f"temp_gender_full_{os.path.basename(video_path)}.wav"
+    temp_full_wav = os.path.join(os.path.dirname(video_path), f"temp_gender_{os.path.basename(video_path)}.wav")
     cmd = [
         ffmpeg_path, "-y",
         "-i", video_path,
@@ -186,10 +186,11 @@ def batch_detect_gender(video_path, subtitles, ffmpeg_path=None):
                 full_data = np.frombuffer(raw_data, dtype=np.uint8).astype(np.int16) - 128
             else:
                 raise ValueError("Unsupported sample width")
-                
-        # Clean up full WAV file early
-        os.remove(temp_full_wav)
-        
+    finally:
+        if os.path.exists(temp_full_wav):
+            os.remove(temp_full_wav)
+            
+    try:
         from modules.transcriber import parse_timestamp
         
         total = len(subtitles)

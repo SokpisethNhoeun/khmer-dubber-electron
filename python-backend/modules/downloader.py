@@ -1,4 +1,5 @@
 import os
+import glob
 import yt_dlp
 import logging
 
@@ -6,7 +7,7 @@ logger = logging.getLogger("dubify.downloader")
 
 def download_video(url, output_dir, progress_callback=None):
     """
-    Downloads a video from a URL (TikTok, Douyin, etc.) using yt-dlp.
+    Downloads a video from a URL (TikTok, Douyin, Xiaohongshu, YouTube, etc.) using yt-dlp.
     Saves it as source.mp4 in output_dir/media.
     """
     media_dir = os.path.join(output_dir, "media")
@@ -18,7 +19,7 @@ def download_video(url, output_dir, progress_callback=None):
         if d['status'] == 'downloading':
             total = d.get('total_bytes') or d.get('total_bytes_estimate')
             downloaded = d.get('downloaded_bytes', 0)
-            if total:
+            if total and total > 0:
                 percent = int(downloaded / total * 100)
                 if progress_callback:
                     progress_callback(percent)
@@ -34,26 +35,34 @@ def download_video(url, output_dir, progress_callback=None):
         'quiet': True,
         'no_warnings': True,
         'overwrites': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
     }
     
-    # Douyin and TikTok support is standard in yt-dlp.
-    # We will attempt download. If it fails, raise exception for UI to show.
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            # Find the actual downloaded file name since yt-dlp might keep format extension
             filename = ydl.prepare_filename(info)
-            # Standardize output to source.mp4
-            ext = os.path.splitext(filename)[1]
             standard_path = os.path.join(media_dir, "source.mp4")
             
-            if filename != standard_path and os.path.exists(filename):
-                # If extension is not mp4, or if renamed, move it
+            # Robust file resolution: find whichever file yt-dlp created in media_dir
+            if os.path.exists(filename) and filename != standard_path:
                 if os.path.exists(standard_path):
                     os.remove(standard_path)
                 os.rename(filename, standard_path)
-            
+            elif not os.path.exists(standard_path):
+                # Search for any source.* file generated in media_dir
+                candidates = glob.glob(os.path.join(media_dir, "source.*"))
+                if candidates:
+                    first_candidate = candidates[0]
+                    if first_candidate != standard_path:
+                        os.rename(first_candidate, standard_path)
+                        
+            if not os.path.exists(standard_path):
+                raise FileNotFoundError("Downloaded video file could not be located.")
+                
             return "media/source.mp4"
     except Exception as e:
-        logger.error(f"Download failed: {e}")
+        logger.error(f"Download failed for URL {url}: {e}")
         raise e

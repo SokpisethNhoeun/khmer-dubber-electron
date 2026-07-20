@@ -14,6 +14,12 @@ def format_srt_time(seconds):
     ms = int((seconds - int(seconds)) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
+def escape_ffmpeg_text(text: str) -> str:
+    """Escapes text strings for FFmpeg drawtext filter syntax."""
+    if not text:
+        return ""
+    return text.replace('\\', '\\\\').replace("'", "'\\\\''").replace(':', '\\:').replace('%', '\\%')
+
 def generate_srt(subtitles, output_srt_path):
     """Generates an SRT subtitle file from the subtitles list"""
     with open(output_srt_path, 'w', encoding='utf-8') as f:
@@ -269,7 +275,7 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
         
     # 4. Text Overlay
     if customizer and customizer.get("text_overlay"):
-        text_str = customizer["text_overlay"].replace("'", "\\'").replace(":", "\\:")
+        text_str = escape_ffmpeg_text(customizer["text_overlay"])
         text_pos = customizer.get("text_position", "top_right")
         
         if text_effect == "scroll_left":
@@ -299,7 +305,7 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
         
     # 5. Footer Overlay
     if customizer and customizer.get("footer_text"):
-        footer_str = customizer["footer_text"].replace("'", "\\'").replace(":", "\\:")
+        footer_str = escape_ffmpeg_text(customizer["footer_text"])
         
         if footer_effect == "scroll_left":
             x_expr, y_expr = "w-mod(t*120\\,w+tw)", "h-th-10"
@@ -340,7 +346,7 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
             time_expr = None
             
         if s_type == "text" and customizer.get("sponsor_asset"):
-            s_text = customizer["sponsor_asset"].replace("'", "\\'").replace(":", "\\:")
+            s_text = escape_ffmpeg_text(customizer["sponsor_asset"])
             sponsor_filter = f"drawtext=text='{s_text}':fontfile='{khmer_font_path}':x=(w-tw)/2:y=(h-th)/2:fontcolor=white:fontsize=32:box=1:boxcolor=0x0f172aff@0.95:boxborderw=15:enable='{time_expr}'"
             video_filters.append(sponsor_filter)
             
