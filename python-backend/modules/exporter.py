@@ -124,12 +124,13 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
     if not valid_subs:
         # No TTS segments to mix. Just use the background source at full volume.
         filter_complex.append(f"{bgm_source}aresample=44100,aformat=channel_layouts=stereo[mixed_audio]")
+        filter_complex.append("[mixed_audio]loudnorm=I=-14:TP=-1.5:LRA=11[normalized_audio]")
     else:
-        mix_inputs = []
-        # Background source ducked by -14dB to let TTS voice be heard clearly
-        filter_complex.append(f"{bgm_source}aresample=44100,aformat=channel_layouts=stereo,volume=-14dB[bgm_ducked]")
-        mix_inputs.append("[bgm_ducked]")
+        # 1. Resample background source
+        filter_complex.append(f"{bgm_source}aresample=44100,aformat=channel_layouts=stereo[bgm_resampled]")
         
+        # 2. Resample and delay each TTS segment
+        tts_delays = []
         for idx, (sub, _) in enumerate(valid_subs):
             input_idx = tts_start_idx + idx
             start_seconds = parse_timestamp(sub["start"])
@@ -139,12 +140,23 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
                 
             # Resample input TTS audio to 44100Hz, stereo and delay it
             filter_complex.append(f"[{input_idx}:a]aresample=44100,aformat=channel_layouts=stereo,adelay={delay_ms}:all=1[delay{idx}]")
-            mix_inputs.append(f"[delay{idx}]")
+            tts_delays.append(f"[delay{idx}]")
             
-        num_mix_inputs = len(mix_inputs)
-        # Use normalize=0 to prevent volume scaling down when multiple inputs are mixed
-        mix_filter = "".join(mix_inputs) + f"amix=inputs={num_mix_inputs}:duration=first:dropout_transition=2:normalize=0[mixed_audio]"
-        filter_complex.append(mix_filter)
+        # 3. Mix all delayed TTS segments into one stream
+        num_tts = len(tts_delays)
+        if num_tts == 1:
+            filter_complex.append(f"{tts_delays[0]}aformat=channel_layouts=stereo[all_tts]")
+        else:
+            filter_complex.append("".join(tts_delays) + f"amix=inputs={num_tts}:duration=first:dropout_transition=2:normalize=0[all_tts]")
+            
+        # 4. Apply smart sidechain compression to BGM using the mixed TTS stream
+        filter_complex.append("[bgm_resampled][all_tts]sidechaincompress=threshold=0.08:ratio=10:attack=150:release=600[bgm_ducked]")
+        
+        # 5. Mix the ducked BGM and mixed TTS together
+        filter_complex.append("[bgm_ducked][all_tts]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed_audio]")
+        
+        # 6. Apply loudness normalization to target -14 LUFS (YouTube & Facebook Reels standard)
+        filter_complex.append("[mixed_audio]loudnorm=I=-14:TP=-1.5:LRA=11[normalized_audio]")
     
     # Video Customizer filter chain
     v_stream = "0:v"
@@ -338,7 +350,7 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
     
     cmd += [
         "-map", v_map,
-        "-map", "[mixed_audio]",
+        "-map", "[normalized_audio]",
         "-c:v", "libx264",
         "-preset", "superfast",
         "-threads", "0",

@@ -182,14 +182,18 @@ ipcMain.handle('select-open-project', async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle('select-file', async (event, options) => {
+ipcMain.handle('select-file', async (event, options = {}) => {
+  const properties = ['openFile'];
+  if (options.multiple) {
+    properties.push('multiSelections');
+  }
   const result = await dialog.showOpenDialog({
     title: options.title || 'Select File',
     filters: options.filters || [],
-    properties: ['openFile']
+    properties: properties
   });
   if (result.canceled) return null;
-  return result.filePaths[0];
+  return options.multiple ? result.filePaths : result.filePaths[0];
 });
 
 ipcMain.handle('select-export-video', async () => {
@@ -203,6 +207,25 @@ ipcMain.handle('select-export-video', async () => {
   if (result.canceled) return null;
   return result.filePath;
 });
+
+ipcMain.handle('export-srt', async (event, { content, defaultName }) => {
+  const result = await dialog.showSaveDialog({
+    title: 'Export Subtitles (SRT)',
+    defaultPath: defaultName || 'subtitles.srt',
+    filters: [
+      { name: 'SubRip Subtitles', extensions: ['srt'] }
+    ]
+  });
+  if (result.canceled) return null;
+  try {
+    fs.writeFileSync(result.filePath, content, 'utf-8');
+    return result.filePath;
+  } catch (err) {
+    logToFile('ERROR', `Failed to export SRT: ${err.message}`);
+    throw err;
+  }
+});
+
 
 ipcMain.handle('export-logs', async () => {
   const defaultPath = path.join(app.getPath('desktop'), 'khmer-video-dubber-logs.txt');

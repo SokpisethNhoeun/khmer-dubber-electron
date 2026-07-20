@@ -19,6 +19,7 @@ def get_ffmpeg_path():
 def detect_gender_from_array(data, fs):
     """
     Analyzes an audio data array and returns 'male', 'female', or None if inconclusive.
+    Uses a robust difference function (YIN-like approach) to calculate fundamental frequency (F0).
     """
     if len(data) == 0:
         return None
@@ -30,60 +31,51 @@ def detect_gender_from_array(data, fs):
     else:
         return None
         
-    # 1. Zero-phase Brickwall Bandpass Filter (75Hz to 320Hz)
-    # This wipes out high-frequency hiss/instruments and low-frequency rumble
-    fft_data = np.fft.rfft(data)
-    freqs_all = np.fft.rfftfreq(len(data), 1.0/fs)
-    bandpass_mask = (freqs_all >= 75.0) & (freqs_all <= 320.0)
-    fft_data[~bandpass_mask] = 0
-    filtered_data = np.fft.irfft(fft_data, n=len(data))
-    
-    # 2. Windowed Harmonic Product Spectrum (HPS) analysis
-    frame_len = int(fs * 0.050)  # 50ms window
-    frame_step = int(fs * 0.025) # 25ms step
+    # Frame settings: 40ms window, 20ms step
+    frame_len = int(fs * 0.040)
+    frame_step = int(fs * 0.020)
     
     f0_list = []
     
-    for start in range(0, len(filtered_data) - frame_len, frame_step):
-        frame = filtered_data[start : start + frame_len]
+    # Lag boundaries for standard human pitch boundaries [75Hz, 300Hz]
+    min_lag = int(fs / 300) # e.g. 53 samples for 16kHz
+    max_lag = int(fs / 75)  # e.g. 213 samples for 16kHz
+    
+    for start in range(0, len(data) - frame_len, frame_step):
+        frame = data[start : start + frame_len]
         
-        # Energy thresholding
+        # Energy thresholding: skip silent frames
         rms = np.sqrt(np.mean(frame**2))
-        if rms < 0.01:
+        if rms < 0.02:
             continue
             
-        # Hanning window to prevent spectral leakage
-        windowed = frame * np.hanning(frame_len)
-        
-        # FFT of the windowed frame
-        rfft = np.fft.rfft(windowed)
-        magnitude = np.abs(rfft)
-        freqs_frame = np.fft.rfftfreq(frame_len, 1.0/fs)
-        
-        # Compute HPS up to order 3
-        hps = magnitude.copy()
-        for factor in [2, 3]:
-            downsampled = magnitude[::factor]
-            if len(downsampled) > 0:
-                hps[:len(downsampled)] *= downsampled
+        # Calculate Difference Function: d(lag) = sum (x[t] - x[t + lag])^2
+        diff = np.zeros(max_lag + 1)
+        for lag in range(min_lag, max_lag + 1):
+            if len(frame) - lag <= 0:
+                break
+            x1 = frame[:-lag]
+            x2 = frame[lag:]
+            diff[lag] = np.sum((x1 - x2) ** 2)
             
-        # Limit peak search to standard human pitch boundaries [75Hz, 300Hz]
-        valid_bins = (freqs_frame >= 75.0) & (freqs_frame <= 300.0)
-        hps[~valid_bins] = 0
-        
-        if np.max(hps) > 0:
-            best_bin = np.argmax(hps)
-            f0 = freqs_frame[best_bin]
+        # Search range for the lag that minimizes the difference function
+        search_range = diff[min_lag:max_lag + 1]
+        if len(search_range) == 0:
+            continue
+            
+        best_lag = np.argmin(search_range) + min_lag
+        f0 = fs / best_lag
+        if 75.0 <= f0 <= 300.0:
             f0_list.append(f0)
-    
+            
     if len(f0_list) < 2:
         return None
         
     median_f0 = np.median(f0_list)
-    logger.info(f"Analyzed {len(f0_list)} voiced frames. Median F0: {median_f0:.2f} Hz")
+    logger.info(f"Analyzed {len(f0_list)} voiced frames using Difference Function. Median F0: {median_f0:.2f} Hz")
     
-    # Male pitch is typically < 155Hz, female is > 155Hz
-    if median_f0 < 155.0:
+    # 160Hz is the standard threshold separating male and female speech fundamental frequency
+    if median_f0 < 160.0:
         return 'male'
     else:
         return 'female'

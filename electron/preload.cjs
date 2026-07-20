@@ -13,5 +13,6 @@ contextBridge.exposeInMainWorld('electron', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   getHostname: () => ipcRenderer.invoke('get-hostname'),
   exportLogs: () => ipcRenderer.invoke('export-logs'),
-  apiRequest: (opts) => ipcRenderer.invoke('api-request', opts)
+  apiRequest: (opts) => ipcRenderer.invoke('api-request', opts),
+  exportSrt: (opts) => ipcRenderer.invoke('export-srt', opts)
 });

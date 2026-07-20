@@ -1,16 +1,88 @@
-import React, { useState, useRef } from 'react';
-import { Plus, Trash2, Edit2, Search, BarChart2, Check, X, Play, Pause, Sparkles } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Plus, Trash2, Edit2, Search, BarChart2, Check, X, Play, Pause } from 'lucide-react';
 import { Input } from '../ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import './SubtitleTable.css';
 
-export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelect, activeRowId, onAutoEmotion }) {
+export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelect, activeRowId }) {
   const [editingId, setEditingId] = useState(null);
   const [editValues, setEditValues] = useState({});
   const [showFindReplace, setShowFindReplace] = useState(false);
   const [findText, setFindText] = useState('');
   const [replaceText, setReplaceText] = useState('');
   const [stats, setStats] = useState(null);
+  const [searchMatchIndex, setSearchMatchIndex] = useState(0);
+
+  // Compute matches list
+  const matchingIds = [];
+  if (findText.trim()) {
+    subtitles.forEach((sub) => {
+      const khmer = sub.khmer_text || '';
+      const chinese = sub.chinese_text || '';
+      const q = findText.toLowerCase();
+      if (khmer.toLowerCase().includes(q) || chinese.toLowerCase().includes(q)) {
+        matchingIds.push(sub.id);
+      }
+    });
+  }
+
+  const scrollToMatch = (subId) => {
+    const el = document.getElementById(`sub-row-${subId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    if (onRowSelect) {
+      onRowSelect(subId);
+    }
+  };
+
+  // When findText changes, reset match index and scroll to the first match
+  useEffect(() => {
+    setSearchMatchIndex(0);
+    if (matchingIds.length > 0) {
+      scrollToMatch(matchingIds[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findText]);
+
+  const handleFindKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (matchingIds.length > 0) {
+        const nextIdx = (searchMatchIndex + 1) % matchingIds.length;
+        setSearchMatchIndex(nextIdx);
+        scrollToMatch(matchingIds[nextIdx]);
+      }
+    }
+  };
+
+  const highlightText = (text, search, isActiveMatch = false) => {
+    if (!text) return '';
+    if (!search) return text;
+    
+    const parts = text.split(new RegExp(`(${search.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')})`, 'gi'));
+    return (
+      <span>
+        {parts.map((part, i) => {
+          const isMatch = part.toLowerCase() === search.toLowerCase();
+          if (isMatch) {
+            const bg = isActiveMatch ? 'rgba(239, 68, 68, 0.6)' : 'rgba(234, 179, 8, 0.4)';
+            const border = isActiveMatch ? '1px solid rgba(239, 68, 68, 0.8)' : '1px solid rgba(234, 179, 8, 0.8)';
+            return (
+              <mark 
+                key={i} 
+                className="search-highlight" 
+                style={{ backgroundColor: bg, color: 'white', padding: '0 2px', borderRadius: '2px', border: border }}
+              >
+                {part}
+              </mark>
+            );
+          }
+          return part;
+        })}
+      </span>
+    );
+  };
 
   const [playingAudioId, setPlayingAudioId] = useState(null);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
@@ -67,11 +139,10 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
   const handleSaveEdit = () => {
     const updated = subtitles.map(sub => {
       if (sub.id === editingId) {
-        // If Khmer text, voice, or emotion changed, reset audio status to not generated
+        // If Khmer text or voice changed, reset audio status to not generated
         const status = (
           sub.khmer_text !== editValues.khmer_text || 
-          sub.voice !== editValues.voice || 
-          sub.emotion !== editValues.emotion
+          sub.voice !== editValues.voice
         ) ? 'not_generated' : sub.audio_status;
         return { ...editValues, audio_status: status };
       }
@@ -85,27 +156,46 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
     setEditingId(null);
   };
 
+  const handleRowBlur = (e) => {
+    // If the new focused element is still within the current row, do not save yet
+    if (e.currentTarget.contains(e.relatedTarget)) {
+      return;
+    }
+    // If the user clicked the Cancel button, skip auto-saving
+    if (e.relatedTarget && (
+      e.relatedTarget.classList.contains('cancel') || 
+      e.relatedTarget.closest('.cancel')
+    )) {
+      return;
+    }
+    // Save the edit automatically
+    handleSaveEdit();
+  };
+
   const handleAddRow = () => {
     let newId = 1;
     let newStart = "00:00.00";
     let newEnd = "00:02.00";
 
-    if (subtitles.length > 0) {
+    if (subtitles && subtitles.length > 0) {
       const last = subtitles[subtitles.length - 1];
-      newId = last.id + 1;
+      newId = (Number(last?.id) || subtitles.length) + 1;
       
-      // Compute next start/end helper
       const parseTime = (str) => {
+        if (!str || typeof str !== 'string') return 0;
         const parts = str.split(':');
-        return parseInt(parts[0]) * 60 + parseFloat(parts[1]);
+        if (parts.length < 2) return parseFloat(parts[0]) || 0;
+        return (parseInt(parts[0]) || 0) * 60 + (parseFloat(parts[1]) || 0);
       };
+      
       const formatTime = (sec) => {
+        if (isNaN(sec) || sec < 0) sec = 0;
         const m = Math.floor(sec / 60);
         const s = sec % 60;
         return `${m.toString().padStart(2, '0')}:${s.toFixed(2).padStart(5, '0')}`;
       };
       
-      const lastEndSec = parseTime(last.end);
+      const lastEndSec = parseTime(last?.end);
       newStart = formatTime(lastEndSec + 0.5);
       newEnd = formatTime(lastEndSec + 2.5);
     }
@@ -117,12 +207,13 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
       chinese_text: "新字幕",
       khmer_text: "អត្ថបទថ្មី",
       voice: "female",
-      emotion: "normal",
       audio_status: "not_generated",
       audio_path: ""
     };
 
-    onUpdateSubtitles([...subtitles, newSub]);
+    if (onUpdateSubtitles) {
+      onUpdateSubtitles([...(subtitles || []), newSub]);
+    }
   };
 
   const handleDeleteRow = (id) => {
@@ -193,13 +284,47 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
 
       {showFindReplace && (
         <div className="find-replace-banner glass-panel">
-          <Input 
-            type="text" 
-            placeholder="Find Khmer text..." 
-            className="banner-input"
-            value={findText}
-            onChange={(e) => setFindText(e.target.value)}
-          />
+          <div className="find-input-group" style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+            <Input 
+              type="text" 
+              placeholder="Find Khmer text..." 
+              className="banner-input"
+              value={findText}
+              onChange={(e) => setFindText(e.target.value)}
+              onKeyDown={handleFindKeyDown}
+            />
+            {findText.trim() && (
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap', paddingRight: '8px' }}>
+                {matchingIds.length > 0 ? `${searchMatchIndex + 1} / ${matchingIds.length}` : '0 matches'}
+              </span>
+            )}
+            {matchingIds.length > 0 && (
+              <div style={{ display: 'flex', gap: '4px' }}>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    const prevIdx = (searchMatchIndex - 1 + matchingIds.length) % matchingIds.length;
+                    setSearchMatchIndex(prevIdx);
+                    scrollToMatch(matchingIds[prevIdx]);
+                  }}
+                  style={{ padding: '4px 8px', fontSize: '11px', height: '28px', minWidth: '24px' }}
+                >
+                  &uarr;
+                </button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    const nextIdx = (searchMatchIndex + 1) % matchingIds.length;
+                    setSearchMatchIndex(nextIdx);
+                    scrollToMatch(matchingIds[nextIdx]);
+                  }}
+                  style={{ padding: '4px 8px', fontSize: '11px', height: '28px', minWidth: '24px' }}
+                >
+                  &darr;
+                </button>
+              </div>
+            )}
+          </div>
           <Input 
             type="text" 
             placeholder="Replace with..." 
@@ -208,7 +333,11 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
             onChange={(e) => setReplaceText(e.target.value)}
           />
           <button className="btn btn-primary btn-sm" onClick={handleFindReplace}>Replace All</button>
-          <button className="btn btn-secondary btn-sm" onClick={() => setShowFindReplace(false)}>Cancel</button>
+          <button className="btn btn-secondary btn-sm" onClick={() => {
+            setShowFindReplace(false);
+            setFindText('');
+            setReplaceText('');
+          }}>Cancel</button>
         </div>
       )}
 
@@ -232,24 +361,8 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
               <th>Start</th>
               <th>End</th>
               <th>Chinese Original</th>
-              <th>Khmer Translation (Double Click to Edit)</th>
+              <th>Khmer SRC (Editable)</th>
               <th>Voice</th>
-              <th>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span>Emotion</span>
-                  <Sparkles 
-                    size={12} 
-                    style={{ color: 'var(--primary)', cursor: 'pointer', transition: 'transform 0.15s ease' }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (onAutoEmotion) onAutoEmotion();
-                    }}
-                    onMouseOver={(e) => e.currentTarget.style.transform = 'scale(1.2)'}
-                    onMouseOut={(e) => e.currentTarget.style.transform = 'scale(1.0)'}
-                    title="Auto-classify all emotions using Gemini AI"
-                  />
-                </div>
-              </th>
               <th>Audio</th>
               <th>Action</th>
             </tr>
@@ -260,11 +373,13 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
               const isActive = sub.id === activeRowId;
               
               return (
-                <tr 
+                 <tr 
                   key={sub.id} 
+                  id={`sub-row-${sub.id}`}
                   className={`${isActive ? 'active-row' : ''} ${isEditing ? 'editing-row' : ''}`}
                   onClick={() => handleRowClick(sub)}
                   onDoubleClick={() => handleDoubleClick(sub)}
+                  onBlur={isEditing ? handleRowBlur : undefined}
                 >
                   <td>{sub.id}</td>
                   <td>
@@ -287,7 +402,9 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
                       />
                     ) : sub.end}
                   </td>
-                  <td className="chinese-cell" title={sub.chinese_text}>{sub.chinese_text}</td>
+                  <td className="chinese-cell" title={sub.chinese_text}>
+                    {highlightText(sub.chinese_text, findText, matchingIds[searchMatchIndex] === sub.id)}
+                  </td>
                   <td>
                     {isEditing ? (
                       <textarea
@@ -297,7 +414,7 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
                       />
                     ) : (
                       <div className="khmer-text-cell" title={sub.khmer_text || "No Khmer translation yet."}>
-                        {sub.khmer_text || <span className="placeholder-text">Not translated</span>}
+                        {sub.khmer_text ? highlightText(sub.khmer_text, findText, matchingIds[searchMatchIndex] === sub.id) : <span className="placeholder-text">Not translated</span>}
                       </div>
                     )}
                   </td>
@@ -320,52 +437,7 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
                     )}
                   </td>
                   <td>
-                    {isEditing ? (
-                      <Select 
-                        value={editValues.emotion || 'normal'}
-                        onValueChange={(val) => handleEditChange('emotion', val)}
-                      >
-                        <SelectTrigger className="h-7 py-0.5 px-2 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="normal">Normal</SelectItem>
-                          <SelectItem value="excited">Excited</SelectItem>
-                          <SelectItem value="sad">Sad</SelectItem>
-                          <SelectItem value="fearful">Scared</SelectItem>
-                          <SelectItem value="cheerful">Cheerful</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <span className={`emotion-tag ${sub.emotion || 'normal'}`} style={{
-                        display: 'inline-block',
-                        padding: '2px 6px',
-                        borderRadius: '4px',
-                        fontSize: '11px',
-                        fontWeight: '500',
-                        textTransform: 'capitalize',
-                        background: sub.emotion === 'excited' ? 'rgba(239, 68, 68, 0.15)' :
-                                    sub.emotion === 'sad' ? 'rgba(59, 130, 246, 0.15)' :
-                                    sub.emotion === 'fearful' ? 'rgba(168, 85, 247, 0.15)' :
-                                    sub.emotion === 'cheerful' ? 'rgba(34, 197, 94, 0.15)' :
-                                    'rgba(255, 255, 255, 0.08)',
-                        color: sub.emotion === 'excited' ? '#ef4444' :
-                               sub.emotion === 'sad' ? '#3b82f6' :
-                               sub.emotion === 'fearful' ? '#a855f7' :
-                               sub.emotion === 'cheerful' ? '#22c55e' :
-                               'var(--text-muted)',
-                        border: sub.emotion === 'excited' ? '1px solid rgba(239, 68, 68, 0.3)' :
-                                sub.emotion === 'sad' ? '1px solid rgba(59, 130, 246, 0.3)' :
-                                sub.emotion === 'fearful' ? '1px solid rgba(168, 85, 247, 0.3)' :
-                                sub.emotion === 'cheerful' ? '1px solid rgba(34, 197, 94, 0.3)' :
-                                '1px solid rgba(255, 255, 255, 0.1)'
-                      }}>
-                        {sub.emotion || 'normal'}
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ display: 'flex w-full', alignItems: 'center', gap: '8px' }}>
                       <span className={`status-badge ${sub.audio_status}`} style={{ margin: 0 }}>
                         {sub.audio_status.replace('_', ' ')}
                       </span>

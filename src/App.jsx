@@ -1,17 +1,18 @@
 import {
-  Film,
-  FolderOpen,
   Globe,
   Loader2,
-  Lock,
-  Music,
   Pause,
   Play,
-  Save,
-  Settings as SettingsIcon,
+  VolumeX,
+  FileText,
   Upload,
+  Film,
+  Lock,
+  Music,
   Video,
-  VolumeX
+  FolderOpen,
+  Save,
+  Settings as SettingsIcon
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import './App.css';
@@ -21,7 +22,11 @@ import TimelineEditor from './components/TimelineEditor';
 import VideoCustomizer from './components/VideoCustomizer';
 import VideoPreview from './components/VideoPreview';
 import LicenseActivation from './components/LicenseActivation';
+import ExportSubtitlesModal from './components/ExportSubtitlesModal';
+import BatchWorkspace from './components/BatchWorkspace';
+import VideoSplitterWorkspace from './components/VideoSplitterWorkspace';
 import { Input } from './components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select';
 import { wsService } from './services/websocket';
 import { apiFetch } from './services/apiFetch';
 import { AlertCircle, Key, Link as LinkIcon } from 'lucide-react';
@@ -46,10 +51,26 @@ export default function App() {
 
   // Settings Dialog
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isExportSrtOpen, setIsExportSrtOpen] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState('single'); // 'single', 'batch', 'splitter'
+  const isBatchMode = workspaceMode === 'batch';
+  const [batchInputs, setBatchInputs] = useState([]);
+  const [batchExportDir, setBatchExportDir] = useState('');
+  const [batchIsProcessing, setBatchIsProcessing] = useState(false);
+  const [batchShowTerminal, setBatchShowTerminal] = useState(false);
+  const [batchLogs, setBatchLogs] = useState([]);
+  const [startBatchFlag, setStartBatchFlag] = useState(false);
+  const [isSessionsOpen, setIsSessionsOpen] = useState(false);
+  const [ttsDialog, setTtsDialog] = useState({ isOpen: false, failedCount: 0, readyCount: 0 });
 
   // Background Job Progress Overlay
   const [activeJob, setActiveJob] = useState(null); // { stage, progress, status }
   const [activeButton, setActiveButton] = useState(null); // 'import_local', 'import_url', 'transcribe', 'translate', 'isolate_bgm', 'generate_tts', 'export'
+  const activeButtonRef = useRef(null);
+  
+  useEffect(() => {
+    activeButtonRef.current = activeButton;
+  }, [activeButton]);
   const [displaySubtitles, setDisplaySubtitles] = useState(false);
   const [aspectRatio, setAspectRatio] = useState('9:16');
   const [stats, setStats] = useState({ ram_total: 0, ram_used: 0, gpu_total: 0, gpu_used: 0, gpu_name: 'N/A' });
@@ -213,6 +234,40 @@ export default function App() {
       setProjectData(data.project_data);
       setActiveJob(null);
       setActiveButton(null);
+
+      // Save session to localStorage
+      if (data.project_dir) {
+        const sessions = JSON.parse(localStorage.getItem('dubify_sessions') || '[]');
+        const name = data.project_data?.video_path 
+          ? data.project_data.video_path.split(/[\\/]/).pop() 
+          : data.project_dir.split(/[\\/]/).pop();
+        const filtered = sessions.filter(s => s.path !== data.project_dir);
+        const newSession = {
+          id: `single_${Date.now()}`,
+          type: 'single',
+          name,
+          path: data.project_dir,
+          timestamp: Date.now(),
+          extraData: {}
+        };
+        const updated = [newSession, ...filtered].slice(0, 20);
+        localStorage.setItem('dubify_sessions', JSON.stringify(updated));
+      }
+
+      // Auto-prompt to resume if the loaded project has uncompleted or failed segments
+      if (data.project_data && data.project_data.subtitles && data.project_data.subtitles.length > 0) {
+        const subs = data.project_data.subtitles;
+        const failedSubs = subs.filter(sub => sub.audio_status === 'failed' || sub.audio_status === 'error');
+        const readySubs = subs.filter(sub => sub.audio_status === 'ready' && sub.audio_path);
+        
+        if (readySubs.length > 0 || failedSubs.length > 0) {
+          setTtsDialog({
+            isOpen: true,
+            failedCount: failedSubs.length,
+            readyCount: readySubs.length
+          });
+        }
+      }
     });
 
     const unsubMediaImported = wsService.on('media_imported', (data) => {
@@ -256,13 +311,6 @@ export default function App() {
       setActiveButton(null);
     });
 
-    const unsubAutoEmotion = wsService.on('auto_emotion_completed', (data) => {
-      setProjectData(data.project_data);
-      setActiveJob(null);
-      setActiveButton(null);
-      alert("Successfully auto-classified emotions for all segments using Gemini API!");
-    });
-
     const unsubExported = (data) => {
       setActiveJob(null);
       setActiveButton(null);
@@ -271,6 +319,7 @@ export default function App() {
     wsService.on('exported', unsubExported);
 
     const unsubProgress = wsService.on('progress', (data) => {
+      if (!activeButtonRef.current) return;
       setActiveJob(data);
     });
 
@@ -308,7 +357,6 @@ export default function App() {
       unsubTtsGenerated();
       unsubTtsPaused();
       unsubJobCancelled();
-      unsubAutoEmotion();
       wsService.off('exported', unsubExported);
       unsubProgress();
       unsubError();
@@ -462,29 +510,6 @@ export default function App() {
     wsService.send('translate', { api_key: apiKey, model: model });
   };
 
-  const handleAutoEmotion = async () => {
-    if (activeJob) return;
-    const apiKey = await getDecryptedKey();
-    const model = localStorage.getItem('gemini_model') || 'gemini-3.1-flash-lite';
-
-    if (!apiKey) {
-      alert('Please enter your Gemini API key in Settings before auto-detecting emotions.');
-      setIsSettingsOpen(true);
-      return;
-    }
-
-    const isValid = localStorage.getItem('gemini_api_key_valid') === 'true';
-    if (!isValid) {
-      alert('Your Gemini API key is not validated. Please go to Settings, configure your key, and verify it is validated first.');
-      setIsSettingsOpen(true);
-      return;
-    }
-
-    setActiveJob({ stage: 'auto_emotion', progress: 0, status: 'Initiating auto-emotion classification...' });
-    setActiveButton('auto_emotion');
-    wsService.send('auto_emotion', { api_key: apiKey, model: model });
-  };
-
   const handleIsolateBgm = () => {
     if (activeJob && activeJob.stage === 'isolating_bgm') {
       wsService.send('cancel_job', { job_name: 'isolate_bgm' });
@@ -501,6 +526,23 @@ export default function App() {
     wsService.send('isolate_bgm');
   };
 
+  const handleResumeTTS = () => {
+    if (!projectData) return;
+    const readySubs = projectData.subtitles.filter(sub => sub.audio_status === 'ready' && sub.audio_path);
+    setActiveJob({ stage: 'generating_tts', progress: Math.round((readySubs.length / projectData.subtitles.length) * 100), status: 'Resuming TTS generation...' });
+    setActiveButton('generate_tts');
+    wsService.send('generate_tts', { subtitles: projectData.subtitles });
+  };
+
+  const handleRegenerateAllTTS = () => {
+    if (!projectData) return;
+    const resetSubs = projectData.subtitles.map(sub => ({ ...sub, audio_status: 'not_generated', audio_path: '' }));
+    setProjectData(prev => ({ ...prev, subtitles: resetSubs }));
+    setActiveJob({ stage: 'generating_tts', progress: 0, status: 'Initiating TTS generation...' });
+    setActiveButton('generate_tts');
+    wsService.send('generate_tts', { subtitles: resetSubs });
+  };
+
   const handleGenerateTTS = () => {
     console.log("handleGenerateTTS clicked. activeJob:", activeJob);
     // If currently running, click to pause
@@ -514,44 +556,20 @@ export default function App() {
     if (activeJob) return;
     if (!projectData || !projectData.subtitles) return;
 
+    const failedSubs = projectData.subtitles.filter(sub => sub.audio_status === 'failed');
     const readySubs = projectData.subtitles.filter(sub => sub.audio_status === 'ready' && sub.audio_path);
 
-    if (readySubs.length > 0) {
-      if (readySubs.length < projectData.subtitles.length) {
-        // Partially completed project - offer resume or restart
-        const choice = window.confirm("You have partially generated audio. Click 'OK' to Resume from where you left off, or 'Cancel' to regenerate all audio from scratch.");
-        if (choice) {
-          // Resume (send as is)
-          setActiveJob({ stage: 'generating_tts', progress: Math.round((readySubs.length / projectData.subtitles.length) * 100), status: 'Resuming TTS generation...' });
-          setActiveButton('generate_tts');
-          wsService.send('generate_tts', { subtitles: projectData.subtitles });
-          return;
-        } else {
-          // Start from scratch (clear statuses first)
-          const resetSubs = projectData.subtitles.map(sub => ({ ...sub, audio_status: 'not_generated', audio_path: '' }));
-          setProjectData(prev => ({ ...prev, subtitles: resetSubs }));
-          setActiveJob({ stage: 'generating_tts', progress: 0, status: 'Initiating TTS generation...' });
-          setActiveButton('generate_tts');
-          wsService.send('generate_tts', { subtitles: resetSubs });
-          return;
-        }
-      } else {
-        // Fully completed project - prompt to overwrite
-        const confirmOverwrite = window.confirm("You have already generated all speech audio. Do you want to overwrite it and generate again from scratch?");
-        if (!confirmOverwrite) return;
-
-        const resetSubs = projectData.subtitles.map(sub => ({ ...sub, audio_status: 'not_generated', audio_path: '' }));
-        setProjectData(prev => ({ ...prev, subtitles: resetSubs }));
-        setActiveJob({ stage: 'generating_tts', progress: 0, status: 'Initiating TTS generation...' });
-        setActiveButton('generate_tts');
-        wsService.send('generate_tts', { subtitles: resetSubs });
-        return;
-      }
+    if (readySubs.length > 0 || failedSubs.length > 0) {
+      setTtsDialog({
+        isOpen: true,
+        failedCount: failedSubs.length,
+        readyCount: readySubs.length
+      });
+      return;
     }
 
-    setActiveJob({ stage: 'generating_tts', progress: 0, status: 'Initiating TTS generation...' });
-    setActiveButton('generate_tts');
-    wsService.send('generate_tts', { subtitles: projectData.subtitles });
+    // Start clean if none are ready or failed
+    handleRegenerateAllTTS();
   };
 
   const handleUpdateSubtitles = (updatedSubs) => {
@@ -597,6 +615,41 @@ export default function App() {
       setActiveButton('save_project');
       wsService.send('save_project', { zip_path: zipPath });
     }
+  };
+
+  const getActiveSessions = () => {
+    const sessions = JSON.parse(localStorage.getItem('dubify_sessions') || '[]');
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const active = sessions.filter(s => s.timestamp > sevenDaysAgo);
+    if (active.length !== sessions.length) {
+      localStorage.setItem('dubify_sessions', JSON.stringify(active));
+    }
+    return active;
+  };
+
+  const handleRemoveSession = (id) => {
+    const sessions = JSON.parse(localStorage.getItem('dubify_sessions') || '[]');
+    const updated = sessions.filter(s => s.id !== id);
+    localStorage.setItem('dubify_sessions', JSON.stringify(updated));
+  };
+
+  const handleClearAllSessions = () => {
+    localStorage.removeItem('dubify_sessions');
+  };
+
+  const handleLoadSession = (session) => {
+    if (session.type === 'single') {
+      wsService.send('open_project', { project_dir: session.path });
+      setWorkspaceMode('single');
+    } else if (session.type === 'batch') {
+      setBatchInputs(session.extraData?.inputs || []);
+      setBatchExportDir(session.extraData?.exportDir || '');
+      if (session.extraData?.customizerSettings) {
+        setCustomizerSettings(session.extraData.customizerSettings);
+      }
+      setWorkspaceMode('batch');
+    }
+    setIsSessionsOpen(false);
   };
 
   const handleLoadProject = async () => {
@@ -843,10 +896,7 @@ export default function App() {
               Khmer Translate by Nhoeun Sokpiseth
             </span>
           </div>
-          <div className="connection-status">
-            <span className={`status-dot ${wsStatus}`}></span>
-            <span className="status-text">{wsStatus === 'connected' ? 'Engine Active' : 'Connecting...'}</span>
-          </div>
+         
         </div>
 
         <div className="navbar-center" style={{ display: 'flex', gap: '20px', alignItems: 'center', fontSize: '11px', color: 'var(--text-muted)' }}>
@@ -875,9 +925,27 @@ export default function App() {
         </div>
 
         <div className="navbar-right">
-          <button className="btn btn-secondary btn-sm" onClick={handleLoadProject} disabled={activeJob}>
+          <div className="mode-select-wrapper" style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: '170px' }}>
+            <span style={{ color: 'var(--text-muted)', fontSize: '11px', whiteSpace: 'nowrap' }}>Mode:</span>
+            <Select
+              value={workspaceMode}
+              onValueChange={(val) => setWorkspaceMode(val)}
+              disabled={!!activeJob}
+            >
+              <SelectTrigger className="w-full h-8 text-xs bg-black/25 border border-white/10 rounded-md focus:ring-0 focus:ring-offset-0 focus:outline-none">
+                <SelectValue placeholder="Select mode" />
+              </SelectTrigger>
+              <SelectContent className="bg-[#11141c] border border-white/10 text-gray-100">
+                <SelectItem value="single">Single Video Mode</SelectItem>
+                <SelectItem value="batch">Batch Dubbing Mode</SelectItem>
+                <SelectItem value="splitter">Video Splitter Mode</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          
+          <button className="btn btn-secondary btn-sm" onClick={() => setIsSessionsOpen(true)} disabled={activeJob}>
             <FolderOpen size={14} />
-            <span>Open Project</span>
+            <span>Sessions</span>
           </button>
           <button className="btn btn-secondary btn-sm" onClick={handleSaveProject} disabled={activeJob}>
             <Save size={14} />
@@ -890,7 +958,29 @@ export default function App() {
         </div>
       </header>
 
-      {!projectData?.video_path ? (
+      {workspaceMode === 'batch' ? (
+        <BatchWorkspace 
+          customizerSettings={customizerSettings}
+          inputs={batchInputs}
+          setInputs={setBatchInputs}
+          exportDir={batchExportDir}
+          setExportDir={setBatchExportDir}
+          isProcessing={batchIsProcessing}
+          setIsProcessing={setBatchIsProcessing}
+          logs={batchLogs}
+          setLogs={setBatchLogs}
+          showTerminal={batchShowTerminal}
+          setShowTerminal={setBatchShowTerminal}
+          startBatchFlag={startBatchFlag}
+          setStartBatchFlag={setStartBatchFlag}
+        />
+      ) : workspaceMode === 'splitter' ? (
+        <VideoSplitterWorkspace
+          setBatchInputs={setBatchInputs}
+          setWorkspaceMode={setWorkspaceMode}
+          setStartBatchFlag={setStartBatchFlag}
+        />
+      ) : !projectData?.video_path ? (
         <div className="welcome-dashboard glass-panel">
           <div className="welcome-header">
             <h2 className="gradient-text" style={{ background: 'linear-gradient(to right, var(--primary), var(--secondary))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', margin: 0 }}>Welcome to Khmer Dubber</h2>
@@ -900,7 +990,7 @@ export default function App() {
           <div className="dashboard-cards-grid">
             <div className="dashboard-card upload-card" onClick={handleImportLocal}>
               <Upload size={32} className="card-icon" />
-              <h3>Upload Local File</h3>
+              <h3>Upload Video</h3>
               <p>Drag and drop a video file here, or click to browse your computer.</p>
             </div>
             
@@ -957,7 +1047,6 @@ export default function App() {
                 onUpdateSubtitles={handleUpdateSubtitles}
                 onRowSelect={handleRowSelect}
                 activeRowId={activeRowId}
-                onAutoEmotion={handleAutoEmotion}
               />
             </div>
           </main>
@@ -977,7 +1066,7 @@ export default function App() {
         </>
       )}
 
-      {projectData?.video_path && (
+      {!isBatchMode && projectData?.video_path && (
         <footer className="footer-action-bar glass-panel">
           <div className="footer-left">
             <div className="url-import-wrapper">
@@ -989,7 +1078,7 @@ export default function App() {
                 onChange={(e) => setUrlInput(e.target.value)}
                 className="url-input"
               />
-               <button className="btn btn-import w-[40%]" onClick={handleImportUrl} disabled={activeJob}>
+               <button className="btn btn-import" onClick={handleImportUrl} disabled={activeJob}>
                 {activeButton === 'import_url' && activeJob ? (
                   <>
                     <Loader2 size={14} className="button-spinner spinner" />
@@ -1010,7 +1099,7 @@ export default function App() {
               <span>
                 {activeButton === 'import_local' && activeJob
                   ? `Copying (${activeJob.progress}%)`
-                  : 'Upload Local File'}
+                  : 'Upload Video'}
               </span>
             </button>
           </div>
@@ -1024,7 +1113,7 @@ export default function App() {
               {activeJob && (activeJob.stage === 'transcribing' || activeJob.stage === 'downloading_model') ? (
                 <>
                   <Pause size={14} className="button-spinner spinner" />
-                  <span>Pause Transcribing ({activeJob.progress}%)</span>
+                  <span>Transcribing ({activeJob.progress}%)</span>
                 </>
               ) : (
                 <>
@@ -1042,7 +1131,7 @@ export default function App() {
               {activeJob && activeJob.stage === 'translating' ? (
                 <>
                   <Pause size={14} className="button-spinner spinner" />
-                  <span>Pause Translating ({activeJob.progress}%)</span>
+                  <span> Translating ({activeJob.progress}%)</span>
                 </>
               ) : (
                 <>
@@ -1060,12 +1149,12 @@ export default function App() {
               {activeJob && activeJob.stage === 'isolating_bgm' ? (
                 <>
                   <Pause size={14} className="button-spinner spinner" />
-                  <span>Pause BGM ({activeJob.progress}%)</span>
+                  <span> BGM Generatinig ({activeJob.progress}%)</span>
                 </>
               ) : (
                 <>
                   <Music size={14} />
-                  <span>Isolate BGM</span>
+                  <span>BGM</span>
                 </>
               )}
             </button>
@@ -1078,7 +1167,7 @@ export default function App() {
               {activeJob && activeJob.stage === 'generating_tts' ? (
                 <>
                   <Pause size={14} className="button-spinner spinner" />
-                  <span>Pause Generating ({activeJob.progress}%)</span>
+                  <span>Generating ({activeJob.progress}%)</span>
                 </>
               ) : (
                 <>
@@ -1089,6 +1178,16 @@ export default function App() {
             </button>
 
             <button
+              className="btn btn-secondary"
+              onClick={() => setIsExportSrtOpen(true)}
+              disabled={!projectData?.subtitles || projectData.subtitles.length === 0}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              <FileText size={14} />
+              <span>Export SRC</span>
+            </button>
+
+            <button
               className="btn btn-primary"
               onClick={handleExportVideo}
               disabled={!projectData?.video_path || (activeJob && activeJob.stage !== 'exporting')}
@@ -1096,7 +1195,7 @@ export default function App() {
               {activeJob && activeJob.stage === 'exporting' ? (
                 <>
                   <Pause size={14} className="button-spinner spinner" />
-                  <span>Pause Export ({activeJob.progress}%)</span>
+                  <span> Exporting ({activeJob.progress}%)</span>
                 </>
               ) : (
                 <>
@@ -1114,6 +1213,182 @@ export default function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
       />
+
+      {/* Export Subtitles Dialog Overlay */}
+      <ExportSubtitlesModal
+        isOpen={isExportSrtOpen}
+        onClose={() => setIsExportSrtOpen(false)}
+        subtitles={projectData?.subtitles || []}
+      />
+
+      {/* Custom TTS Options Dialog Overlay */}
+      {ttsDialog.isOpen && (
+        <div className="custom-dialog-overlay" onClick={() => setTtsDialog(prev => ({ ...prev, isOpen: false }))}>
+          <div className="custom-dialog-box" onClick={(e) => e.stopPropagation()}>
+            <div className="custom-dialog-header">
+              <h3>Generate Audio Options</h3>
+            </div>
+            <div className="custom-dialog-body">
+              <p style={{ margin: '8px 0 16px 0', fontSize: '13.5px', color: 'var(--text-muted)' }}>
+                You have partially generated audio ({ttsDialog.readyCount} ready
+                {ttsDialog.failedCount > 0 ? `, ${ttsDialog.failedCount} failed` : ''}).
+                What would you like to do?
+              </p>
+            </div>
+            <div className="custom-dialog-footer">
+              <button 
+                className="btn btn-ghost" 
+                onClick={() => setTtsDialog(prev => ({ ...prev, isOpen: false }))}
+              >
+                Cancel
+              </button>
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => {
+                  setTtsDialog(prev => ({ ...prev, isOpen: false }));
+                  handleResumeTTS();
+                }}
+              >
+                Resume Failed Only
+              </button>
+              <button 
+                className="btn btn-primary" 
+                onClick={() => {
+                  setTtsDialog(prev => ({ ...prev, isOpen: false }));
+                  handleRegenerateAllTTS();
+                }}
+              >
+                Whole Audio
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sessions Dialog Overlay */}
+      {isSessionsOpen && (
+        <div className="custom-dialog-overlay" onClick={() => setIsSessionsOpen(false)}>
+          <div className="custom-dialog-box" style={{ width: '560px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="custom-dialog-header">
+              <h3>Workspace Sessions</h3>
+            </div>
+            <div className="custom-dialog-body" style={{ maxHeight: '350px', overflowY: 'auto', padding: '0 4px' }}>
+              {getActiveSessions().length === 0 ? (
+                <p style={{ margin: '16px 0', textAlign: 'center', fontSize: '13px', color: 'var(--text-muted)' }}>
+                  No recent sessions found. They will automatically save when you open a project or modify a batch queue.
+                </p>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px', textAlign: 'left' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)', fontSize: '10.5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Type</th>
+                      <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)', fontSize: '10.5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Workspace / Project</th>
+                      <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)', fontSize: '10.5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Saved Time</th>
+                      <th style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)', fontSize: '10.5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px', textAlign: 'right' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {getActiveSessions().map((sess, idx) => (
+                      <tr 
+                        key={sess.id} 
+                        style={{
+                          background: idx % 2 === 0 ? 'rgba(255, 255, 255, 0.01)' : 'transparent',
+                          borderBottom: '1px solid rgba(255, 255, 255, 0.03)'
+                        }}
+                      >
+                        <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
+                          <span style={{ 
+                            color: sess.type === 'single' ? '#3b82f6' : 'var(--primary)', 
+                            fontSize: '10px', 
+                            textTransform: 'uppercase', 
+                            letterSpacing: '0.5px',
+                            fontWeight: 'bold',
+                            background: sess.type === 'single' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(168, 85, 247, 0.1)',
+                            padding: '2px 6px',
+                            borderRadius: '4px'
+                          }}>
+                            {sess.type}
+                          </span>
+                        </td>
+                        <td style={{ padding: '10px 12px', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: '500', color: 'var(--text)' }} title={sess.name}>
+                          {sess.name}
+                        </td>
+                        <td style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: '11.5px', whiteSpace: 'nowrap' }}>
+                          {new Date(sess.timestamp).toLocaleString()}
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                            <button 
+                              className="btn btn-primary btn-sm"
+                              onClick={() => handleLoadSession(sess)}
+                              style={{ padding: '4px 10px', fontSize: '11.5px' }}
+                            >
+                              Resume
+                            </button>
+                            <button 
+                              onClick={() => {
+                                handleRemoveSession(sess.id);
+                                // force render
+                                setIsSessionsOpen(true);
+                              }}
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: 'var(--text-muted)',
+                                cursor: 'pointer',
+                                padding: '4px 6px',
+                                fontSize: '18px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                transition: 'color 0.2s'
+                              }}
+                            >
+                              &times;
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div className="custom-dialog-footer" style={{ justifyContent: 'space-between' }}>
+              <button 
+                className="btn btn-danger btn-sm" 
+                onClick={() => {
+                  if (window.confirm("Are you sure you want to clear all sessions?")) {
+                    handleClearAllSessions();
+                    setIsSessionsOpen(false);
+                  }
+                }}
+                disabled={getActiveSessions().length === 0}
+              >
+                Clear All
+              </button>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {window.electron && (
+                  <button 
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => {
+                      setIsSessionsOpen(false);
+                      handleLoadProject();
+                    }}
+                  >
+                    Browse Files...
+                  </button>
+                )}
+                <button 
+                  className="btn btn-ghost btn-sm" 
+                  onClick={() => setIsSessionsOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

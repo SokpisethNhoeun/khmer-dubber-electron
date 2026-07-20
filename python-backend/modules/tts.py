@@ -91,8 +91,8 @@ async def generate_single_tts(text, voice_type, output_path, target_duration=0, 
     voice = VOICE_MAP.get(voice_type.lower(), "km-KH-SreymomNeural")
     style = EMOTION_MAP.get(emotion.lower(), {"pitch": "+0Hz", "rate": "+0%"})
     
-    # Pass 1: Generate with normal/emotional speed
-    communicate = edge_tts.Communicate(text, voice, rate=style["rate"], pitch=style["pitch"])
+    # Pass 1: Generate with normal speed
+    communicate = edge_tts.Communicate(text, voice, rate=style["rate"], pitch="+0Hz")
     await communicate.save(output_path)
     
     if target_duration <= 0:
@@ -114,8 +114,8 @@ async def generate_single_tts(text, voice_type, output_path, target_duration=0, 
         rate_str = f"{pct_change:+d}%"
         logger.info(f"Regenerating TTS segment {output_path} at rate {rate_str} to fit target {target_duration:.2f}s (natural: {natural_dur:.2f}s)")
         
-        # Pass 2: Regenerate with perfect rate and emotional pitch
-        communicate = edge_tts.Communicate(text, voice, rate=rate_str, pitch=style["pitch"])
+        # Pass 2: Regenerate with perfect rate and standard pitch
+        communicate = edge_tts.Communicate(text, voice, rate=rate_str, pitch="+0Hz")
         await communicate.save(output_path)
 
 

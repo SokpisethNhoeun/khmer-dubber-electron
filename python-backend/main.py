@@ -722,9 +722,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     task = state.active_tasks[job_name]
                     task.cancel()
                     logger.info(f"Successfully cancelled background job: {job_name}")
-                    await send_event(websocket, "job_cancelled", {"job_name": job_name})
                 else:
-                    await send_event(websocket, "error", {"message": f"Job {job_name} is not running."})
+                    logger.info(f"Cancel requested for background job '{job_name}', but it was not active.")
+                await send_event(websocket, "job_cancelled", {"job_name": job_name})
 
             elif cmd == "validate_api_key":
                 api_key = message.get("api_key")
@@ -813,6 +813,287 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                 t = asyncio.create_task(run_export())
                 state.active_tasks["export"] = t
+
+            elif cmd == "get_video_duration":
+                video_path = message.get("video_path")
+                if not video_path or not os.path.exists(video_path):
+                    await send_event(websocket, "error", {"message": f"File not found: {video_path}"})
+                    continue
+                
+                try:
+                    res = await asyncio.to_thread(
+                        subprocess.run,
+                        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                         "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5
+                    )
+                    duration = float(res.stdout.strip()) if (res.returncode == 0 and res.stdout.strip()) else 0.0
+                    await send_event(websocket, "video_duration_retrieved", {"video_path": video_path, "duration": duration})
+                except Exception as e:
+                    logger.error(f"Error in get_video_duration: {e}")
+                    await send_event(websocket, "error", {"message": f"Failed to read duration: {str(e)}"})
+
+            elif cmd == "split_video":
+                video_path = message.get("video_path")
+                segment_time = float(message.get("segment_time", 300))
+                
+                if not video_path or not os.path.exists(video_path):
+                    await send_event(websocket, "error", {"message": f"Input video file not found: {video_path}"})
+                    continue
+                
+                async def run_split():
+                    try:
+                        await send_event(websocket, "progress", {"stage": "splitting", "progress": 10, "status": "Analyzing video length..."})
+                        
+                        # Get total duration
+                        res = await asyncio.to_thread(
+                            subprocess.run,
+                            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5
+                        )
+                        duration = float(res.stdout.strip()) if (res.returncode == 0 and res.stdout.strip()) else 0.0
+                        
+                        await send_event(websocket, "progress", {"stage": "splitting", "progress": 30, "status": "Splitting video segments..."})
+                        
+                        # Create output dir
+                        output_dir = os.path.join(USER_DATA_DIR, "split_segments", f"split_{int(asyncio.get_event_loop().time())}")
+                        os.makedirs(output_dir, exist_ok=True)
+                        
+                        _, ext = os.path.splitext(video_path)
+                        if not ext:
+                            ext = ".mp4"
+                        
+                        # Run FFmpeg segment copy
+                        ffmpeg_cmd = [
+                            FFMPEG_PATH, "-y", "-i", video_path,
+                            "-f", "segment", "-segment_time", str(segment_time),
+                            "-reset_timestamps", "1", "-c", "copy",
+                            os.path.join(output_dir, f"part_%03d{ext}")
+                        ]
+                        
+                        logger.info(f"Running ffmpeg split: {' '.join(ffmpeg_cmd)}")
+                        
+                        split_res = await asyncio.to_thread(
+                            subprocess.run,
+                            ffmpeg_cmd,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                        )
+                        
+                        if split_res.returncode != 0:
+                            raise ValueError(f"FFmpeg split failed: {split_res.stderr}")
+                        
+                        await send_event(websocket, "progress", {"stage": "splitting", "progress": 80, "status": "Reading split parts..."})
+                        
+                        # Format seconds helper
+                        def format_secs(secs):
+                            hrs = int(secs // 3600)
+                            mins = int((secs % 3600) // 60)
+                            seconds = int(secs % 60)
+                            if hrs > 0:
+                                return f"{hrs:02d}:{mins:02d}:{seconds:02d}"
+                            return f"{mins:02d}:{seconds:02d}"
+                        
+                        # Get duration helper
+                        def get_file_dur(p_path):
+                            try:
+                                r = subprocess.run([
+                                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                    "-of", "default=noprint_wrappers=1:nokey=1", p_path
+                                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+                                return float(r.stdout.strip()) if (r.returncode == 0 and r.stdout.strip()) else 0.0
+                            except Exception:
+                                return 0.0
+                        
+                        parts_info = []
+                        current_time = 0.0
+                        
+                        for f_name in sorted(os.listdir(output_dir)):
+                            if f_name.startswith("part_") and f_name.lower().endswith(ext.lower()):
+                                part_path = os.path.join(output_dir, f_name)
+                                part_dur = await asyncio.to_thread(get_file_dur, part_path)
+                                
+                                start_str = format_secs(current_time)
+                                end_str = format_secs(current_time + part_dur)
+                                
+                                parts_info.append({
+                                    "id": f"split_{f_name}_{int(asyncio.get_event_loop().time())}",
+                                    "type": "local",
+                                    "path": part_path,
+                                    "name": f"{os.path.basename(video_path)} - Part {int(f_name.replace('part_', '').replace(ext, '')) + 1} ({start_str} - {end_str})",
+                                    "duration": part_dur,
+                                    "status": "pending"
+                                })
+                                current_time += part_dur
+                        
+                        await send_event(websocket, "progress", {"stage": "splitting", "progress": 100, "status": "Split completed!"})
+                        await send_event(websocket, "video_split_completed", {"parts": parts_info})
+                    except Exception as err:
+                        logger.error(f"Error in split_video: {err}", exc_info=True)
+                        await send_event(websocket, "error", {"message": f"Split video failed: {str(err)}"})
+                        await send_event(websocket, "progress", {"stage": "splitting", "progress": 0, "status": "Split failed."})
+                
+                asyncio.create_task(run_split())
+                        
+            elif cmd == "start_batch_process":
+                inputs = message.get("inputs", [])
+                export_dir = message.get("export_dir")
+                burn_subtitles = message.get("burn_subtitles", False)
+                api_key = message.get("api_key")
+                model_name = message.get("model", "gemini-3.1-flash-lite")
+                whisper_model = message.get("whisper_model", "base")
+                customizer = message.get("customizer")
+                
+                if not inputs:
+                    await send_event(websocket, "error", {"message": "No inputs provided for batch processing."})
+                    continue
+                if not export_dir:
+                    await send_event(websocket, "error", {"message": "No export folder provided."})
+                    continue
+                
+                async def run_batch_process():
+                    async def log_msg(msg, status="info"):
+                        logger.info(f"[Batch Log] {msg}")
+                        await send_event(websocket, "batch_log", {"message": msg, "type": status})
+                    
+                    await log_msg(f"Starting batch process for {len(inputs)} videos. Target export directory: {export_dir}")
+                    
+                    results = []
+                    
+                    for idx, item in enumerate(inputs):
+                        video_name = item.get("path") or item.get("url")
+                        video_basename = os.path.basename(video_name) if item.get("path") else video_name
+                        
+                        await log_msg(f"----------------------------------------", "info")
+                        await log_msg(f"Processing video {idx+1}/{len(inputs)}: {video_basename}...", "info")
+                        
+                        # Create unique temp workspace directory
+                        temp_workspace = os.path.join(USER_DATA_DIR, "batch_workspaces", f"video_{idx+1}_{int(asyncio.get_event_loop().time())}")
+                        os.makedirs(temp_workspace, exist_ok=True)
+                        os.makedirs(os.path.join(temp_workspace, "media"), exist_ok=True)
+                        os.makedirs(os.path.join(temp_workspace, "audio"), exist_ok=True)
+                        os.makedirs(os.path.join(temp_workspace, "exports"), exist_ok=True)
+                        
+                        try:
+                            # 1. Download/Copy Media
+                            await log_msg(f"[Step 1/6] Importing video file...", "info")
+                            local_path = item.get("path")
+                            url = item.get("url")
+                            video_rel_path = None
+                            
+                            if local_path:
+                                if not os.path.exists(local_path):
+                                    raise FileNotFoundError(f"Local file not found: {local_path}")
+                                dest = os.path.join(temp_workspace, "media", "source.mp4")
+                                await asyncio.to_thread(shutil.copy2, local_path, dest)
+                                video_rel_path = "media/source.mp4"
+                            elif url:
+                                await log_msg(f"Downloading from link: {url}...", "info")
+                                def dl_progress(p):
+                                    pass
+                                video_rel_path = await asyncio.to_thread(downloader.download_video, url, temp_workspace, dl_progress)
+                            else:
+                                raise ValueError("Invalid item format: missing path or url.")
+                            
+                            video_abs_path = os.path.join(temp_workspace, video_rel_path)
+                            
+                            # 2. Isolate BGM
+                            await log_msg(f"[Step 2/6] Isolating background music (BGM)...", "info")
+                            python_exe = sys.executable
+                            bgm_rel_path = await asyncio.to_thread(
+                                bgm_isolator.isolate_bgm,
+                                video_abs_path,
+                                temp_workspace,
+                                ffmpeg_path=FFMPEG_PATH,
+                                python_exe=python_exe,
+                                progress_callback=None
+                            )
+                            
+                            # 3. Transcribe Video & Auto-Detect Gender
+                            await log_msg(f"[Step 3/6] Transcribing Chinese text & detecting speaker genders...", "info")
+                            subtitles = await asyncio.to_thread(
+                                transcriber.transcribe_video,
+                                video_abs_path,
+                                whisper_model,
+                                MODELS_DIR,
+                                None
+                            )
+                            
+                            if not subtitles:
+                                raise ValueError("No speech segments detected in the video.")
+                            
+                            await log_msg(f"Detected {len(subtitles)} speech segments.", "info")
+                            
+                            # 4. Translate Subtitles to Khmer
+                            await log_msg(f"[Step 4/6] Translating script to Khmer using Gemini...", "info")
+                            subtitles = await asyncio.to_thread(
+                                translator.translate_subtitles,
+                                subtitles,
+                                api_key,
+                                model_name
+                            )
+                            
+                            # 5. Generate TTS Voices
+                            await log_msg(f"[Step 5/6] Generating Khmer neural audio segments...", "info")
+                            subtitles = await tts.generate_tts_for_subtitles(
+                                subtitles,
+                                temp_workspace,
+                                None,
+                                ffmpeg_path=FFMPEG_PATH
+                            )
+                            
+                            # 6. Mux & Export Video
+                            await log_msg(f"[Step 6/6] Encoding and exporting final dubbed video...", "info")
+                            item_customizer = item.get("customizer") or customizer
+                            export_rel_path = await asyncio.to_thread(
+                                exporter.export_video,
+                                temp_workspace,
+                                subtitles,
+                                FFMPEG_PATH,
+                                burn_subtitles,
+                                None,
+                                "original",
+                                item_customizer
+                            )
+                            
+                            final_video_name = f"dubbed_{os.path.splitext(os.path.basename(video_abs_path))[0]}.mp4"
+                            dest_export_path = os.path.join(export_dir, final_video_name)
+                            
+                            # Resolve name conflict in export folder
+                            base_name, ext = os.path.splitext(final_video_name)
+                            counter = 1
+                            while os.path.exists(dest_export_path):
+                                dest_export_path = os.path.join(export_dir, f"{base_name}_{counter}{ext}")
+                                counter += 1
+                                
+                            video_output_abs = os.path.join(temp_workspace, export_rel_path)
+                            os.makedirs(export_dir, exist_ok=True)
+                            await asyncio.to_thread(shutil.copy2, video_output_abs, dest_export_path)
+                            
+                            await log_msg(f"✓ Video {idx+1}/{len(inputs)} successfully dubbed! Saved to: {dest_export_path}", "success")
+                            results.append({"video": video_basename, "status": "success", "dest": dest_export_path})
+                            
+                        except asyncio.CancelledError:
+                            await log_msg(f"✗ Batch process cancelled.", "error")
+                            raise
+                        except Exception as e:
+                            logger.error(f"Error processing video {video_basename}: {e}", exc_info=True)
+                            await log_msg(f"✗ Video {idx+1}/{len(inputs)} failed: {str(e)}", "error")
+                            results.append({"video": video_basename, "status": "failed", "error": str(e)})
+                        finally:
+                            try:
+                                if os.path.exists(temp_workspace):
+                                    await asyncio.to_thread(shutil.rmtree, temp_workspace)
+                            except Exception as cleanup_err:
+                                logger.error(f"Cleanup failed for {temp_workspace}: {cleanup_err}")
+                    
+                    await log_msg(f"========================================", "info")
+                    await log_msg(f"Batch processing completed! Successful: {len([r for r in results if r['status'] == 'success'])}/{len(inputs)}", "info")
+                    await send_event(websocket, "batch_process_completed", {"results": results})
+                    state.active_tasks.pop("batch", None)
+                
+                t = asyncio.create_task(run_batch_process())
+                state.active_tasks["batch"] = t
                 
             elif cmd == "save_project":
                 zip_path = message.get("zip_path")

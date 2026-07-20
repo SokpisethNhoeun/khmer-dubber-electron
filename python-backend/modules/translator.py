@@ -47,12 +47,13 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
         logger.info(f"Translating chunk {i // chunk_size + 1} ({len(chunk)} items)...")
         
         prompt_pass1 = (
-            "You are an elite movie translator and expert scriptwriter. Translate the following Chinese video subtitles into Khmer.\n"
+            "You are an elite movie review narrator and professional scriptwriter. Translate the following Chinese video subtitles into Khmer.\n"
+            "The source video is a Movie Recap/Review video (电影解说), so the narrative must be engaging, clear, and dramatic.\n"
             "Requirements:\n"
-            "1. Movie-Style Phrasing: Do NOT perform literal word-for-word translations. Instead, rewrite the dialogue in natural, conversational, and dramatic Khmer, exactly how native speakers speak in high-quality dubbed movies and TV shows.\n"
-            "2. Flow & Timing: Ensure the Khmer text flows organically and is easy for a voice actor to speak. Look at the 'duration_seconds' for each item. The Khmer translation must fit comfortably within this duration. Short duration items (e.g. < 2s) must be translated into extremely concise, fast-to-speak Khmer phrases.\n"
-            "3. Emotion Detection: Analyze the emotional context of the Chinese dialogue. Classify each segment's emotion into exactly one of these lowercase keys: 'normal', 'excited', 'sad', 'fearful', or 'cheerful'.\n"
-            "Return the output STRICTLY as a JSON array of objects, containing 'id', 'text' (translated Khmer), and 'emotion' (the classified emotion key).\n\n"
+            "1. Movie Recap Style: Do NOT translate literally. Rewrite the text into natural, storytelling, and compelling Khmer, exactly like a professional movie review commentator on Facebook/YouTube. Make it very easy to understand and exciting for Khmer listeners.\n"
+            "2. Simple & Clear: Avoid overly formal, literary, or archaic Khmer words. Use simple, modern, conversational Khmer that immediately makes the storyline clear and easy to follow.\n"
+            "3. Timing alignment (Strict Max 1.6x speed): Look at the 'duration_seconds' for each item. The Khmer voice generator has a maximum speed limit of 1.6x. You MUST translate and condense the text so that it can be spoken comfortably within this duration at a maximum speed of 1.6x, while preserving 100% of the original meaning. For very short durations (e.g. < 2s), use extremely brief, punchy Khmer words.\n"
+            "Return the output STRICTLY as a JSON array of objects containing 'id' and 'text' (translated Khmer script).\n\n"
             f"Input data:\n{json.dumps(chunk, ensure_ascii=False)}"
         )
         
@@ -75,15 +76,14 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
             
     logger.info(f"Pass 1 chunked translation complete. Merged {len(translated_items)} items. Starting Pass 2 polish...")
         
-    # PASS 2: Polish the entire merged script for natural native phrasing and refine emotions
+    # PASS 2: Polish the entire merged script for natural native phrasing
     prompt_pass2 = (
-        "You are a master Khmer dialogue editor and movie script polisher. Review, refine, and finalize the following Khmer subtitles.\n"
+        "You are a master Khmer dialogue editor and movie recap script reviewer. Review, polish, and finalize the following Khmer subtitles.\n"
         "Requirements:\n"
-        "1. Maximize Nativeness: Polish each line to make it sound incredibly natural, colloquial, and emotional, exactly like a high-budget Khmer dubbed movie.\n"
-        "2. Voice Actor Cadence: Rewrite any awkward or stiff phrasing into smooth, native expressions that sound excellent when spoken aloud by a text-to-speech engine.\n"
-        "3. Timeline Constraints: Keep the sentence lengths short and concise so they don't overflow the video timing.\n"
-        "4. Preserve or Refine Emotion: Keep or adjust the 'emotion' key ('normal', 'excited', 'sad', 'fearful', or 'cheerful') based on the polished dialog context.\n"
-        "Return the output STRICTLY as a JSON array of objects with 'id', 'text' (polished Khmer), and 'emotion' (the final emotion key) keys.\n\n"
+        "1. Maximize Nativeness & Clarity: Polish each line to sound extremely colloquial, clear, and engaging. It should feel like a fluent Khmer movie narrator telling a story.\n"
+        "2. Auditory Cadence: Rewrite any stiff or awkward phrasing into smooth, native expressions that sound excellent when spoken aloud by a Khmer text-to-speech voice.\n"
+        "3. Timeline Constraints (Strict Max 1.6x speed): Make sure that sentence lengths are concise and brief. Do not use verbose expressions. The script must be short enough so that the text-to-speech engine can read it within each segment's duration at a maximum speed of 1.6x, without compromising the meaning.\n"
+        "Return the output STRICTLY as a JSON array of objects with 'id' and 'text' (polished Khmer script) keys.\n\n"
         f"Subtitles to polish:\n{json.dumps(translated_items, ensure_ascii=False)}"
     )
     
@@ -100,19 +100,19 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
         polished_items = json.loads(text_pass2)
         logger.info("Pass 2 translation polish successful.")
         
-        # Map polished text and emotion back to subtitles list
-        polished_map = {item["id"]: (item["text"], item.get("emotion", "normal")) for item in polished_items}
+        # Map polished text back to subtitles list
+        polished_map = {item["id"]: item["text"] for item in polished_items}
         for sub in subtitles:
             sub_id = sub["id"]
             if sub_id in polished_map:
-                sub["khmer_text"] = polished_map[sub_id][0]
-                sub["emotion"] = polished_map[sub_id][1]
+                sub["khmer_text"] = polished_map[sub_id]
+                sub["emotion"] = "normal"
             else:
                 # Fallback to Pass 1
-                pass1_map = {item["id"]: (item["text"], item.get("emotion", "normal")) for item in translated_items}
+                pass1_map = {item["id"]: item["text"] for item in translated_items}
                 if sub_id in pass1_map:
-                    sub["khmer_text"] = pass1_map[sub_id][0]
-                    sub["emotion"] = pass1_map[sub_id][1]
+                    sub["khmer_text"] = pass1_map[sub_id]
+                    sub["emotion"] = "normal"
                 else:
                     sub["khmer_text"] = ""
                     sub["emotion"] = "normal"
@@ -120,10 +120,10 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
     except Exception as e:
         logger.warning(f"Pass 2 polish failed or returned invalid JSON: {e}. Falling back to Pass 1 translation.")
         # Fallback to Pass 1 results
-        pass1_map = {item["id"]: (item["text"], item.get("emotion", "normal")) for item in translated_items}
+        pass1_map = {item["id"]: item["text"] for item in translated_items}
         for sub in subtitles:
-            sub["khmer_text"] = pass1_map.get(sub["id"], ("", "normal"))[0]
-            sub["emotion"] = pass1_map.get(sub["id"], ("", "normal"))[1]
+            sub["khmer_text"] = pass1_map.get(sub["id"], "")
+            sub["emotion"] = "normal"
             
     return subtitles
 
