@@ -295,6 +295,12 @@ export default function App() {
       setActiveButton(null);
     });
 
+    const unsubLipSynced = wsService.on('lip_synced', (data) => {
+      setProjectData(data.project_data);
+      setActiveJob(null);
+      setActiveButton(null);
+    });
+
     const unsubTtsGenerated = wsService.on('tts_generated', (data) => {
       setProjectData(data.project_data);
       setActiveJob(null);
@@ -525,6 +531,20 @@ export default function App() {
     setActiveJob({ stage: 'isolating_bgm', progress: 0, status: 'Initiating BGM isolation...' });
     setActiveButton('isolate_bgm');
     wsService.send('isolate_bgm');
+  };
+
+  const handleLipSync = () => {
+    if (activeJob && activeJob.stage === 'lip_sync') {
+      wsService.send('cancel_job', { job_name: 'lip_sync' });
+      setActiveJob({ stage: 'lip_sync', progress: activeJob.progress, status: 'Cancelling Lip-Sync...' });
+      return;
+    }
+    if (activeJob) return;
+    if (!projectData || !projectData.video_path) return;
+    
+    setActiveJob({ stage: 'lip_sync', progress: 0, status: 'Initiating AI Lip-Sync alignment...' });
+    setActiveButton('lip_sync');
+    wsService.send('lip_sync');
   };
 
   const handleResumeTTS = () => {
@@ -1154,12 +1174,30 @@ export default function App() {
               {activeJob && activeJob.stage === 'isolating_bgm' ? (
                 <>
                   <Pause size={14} className="button-spinner spinner" />
-                  <span> BGM Generatinig ({activeJob.progress}%)</span>
+                  <span> BGM Generating ({activeJob.progress}%)</span>
                 </>
               ) : (
                 <>
                   <Music size={14} />
                   <span>BGM</span>
+                </>
+              )}
+            </button>
+
+            <button
+              className="btn btn-isolate"
+              onClick={handleLipSync}
+              disabled={!projectData?.video_path || (activeJob && activeJob.stage !== 'lip_sync')}
+            >
+              {activeJob && activeJob.stage === 'lip_sync' ? (
+                <>
+                  <Pause size={14} className="button-spinner spinner" />
+                  <span> Lip-Syncing ({activeJob.progress}%)</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles size={14} />
+                  <span>AI Lip-Sync</span>
                 </>
               )}
             </button>

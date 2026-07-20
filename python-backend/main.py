@@ -16,7 +16,7 @@ from google import genai
 # Set up path to import modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from modules import downloader, transcriber, translator, tts, bgm_isolator, project_manager, exporter
+from modules import downloader, transcriber, translator, tts, bgm_isolator, lip_sync, project_manager, exporter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("dubify.backend")
@@ -660,6 +660,48 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                 t = asyncio.create_task(run_bgm())
                 state.active_tasks["isolate_bgm"] = t
+                
+            elif cmd == "lip_sync":
+                if not state.project_dir or not state.project_data:
+                    await send_event(websocket, "error", {"message": "No project loaded."})
+                    continue
+                    
+                async def run_lip_sync():
+                    try:
+                        await send_event(websocket, "progress", {"stage": "lip_sync", "progress": 10, "status": "Starting AI Lip-Sync..."})
+                        
+                        def sync_progress(p):
+                            asyncio.run_coroutine_threadsafe(
+                                send_event(websocket, "progress", p),
+                                loop
+                            )
+                            
+                        synced_video_path = await asyncio.to_thread(
+                            lip_sync.process_lip_sync,
+                            state.project_dir,
+                            state.project_data.get("subtitles", []),
+                            FFMPEG_PATH,
+                            sync_progress
+                        )
+                        
+                        with state.lock:
+                            state.project_data["lipsynced_video_path"] = synced_video_path
+                            project_json_path = os.path.join(state.project_dir, "project.json")
+                            with open(project_json_path, 'w', encoding='utf-8') as f:
+                                json.dump(state.project_data, f, indent=2, ensure_ascii=False)
+                                
+                        await send_event(websocket, "lip_synced", {"project_data": state.project_data})
+                    except asyncio.CancelledError:
+                        logger.info("Lip-sync task cancelled.")
+                        await send_event(websocket, "progress", {"stage": "lip_sync", "progress": 0, "status": "Lip-sync cancelled."})
+                    except Exception as e:
+                        logger.error(f"Lip-sync failed: {e}")
+                        await send_event(websocket, "error", {"message": f"Lip-sync failed: {str(e)}"})
+                    finally:
+                        state.active_tasks.pop("lip_sync", None)
+                        
+                t = asyncio.create_task(run_lip_sync())
+                state.active_tasks["lip_sync"] = t
                 
             elif cmd == "generate_tts":
                 # User can update subtitles directly before generating TTS
