@@ -31,8 +31,9 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-    if (onRowSelect) {
-      onRowSelect(subId);
+    const matchedSub = subtitles.find(s => s.id === subId);
+    if (matchedSub && onRowSelect) {
+      onRowSelect(matchedSub);
     }
   };
 
@@ -437,8 +438,8 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
                     )}
                   </td>
                   <td>
-                    <div style={{ display: 'flex w-full', alignItems: 'center', gap: '8px' }}>
-                      <span className={`status-badge ${sub.audio_status}`} style={{ margin: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span className={`status-badge  w-full ${sub.audio_status}`} style={{ margin: 0 }}>
                         {sub.audio_status.replace('_', ' ')}
                       </span>
                        {sub.audio_status === 'ready' && sub.audio_path && (

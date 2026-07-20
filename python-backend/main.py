@@ -934,6 +934,63 @@ async def websocket_endpoint(websocket: WebSocket):
                         await send_event(websocket, "progress", {"stage": "splitting", "progress": 0, "status": "Split failed."})
                 
                 asyncio.create_task(run_split())
+                
+            elif cmd == "download_batch_link":
+                url = message.get("url")
+                item_id = message.get("item_id")
+                
+                if not url or not item_id:
+                    await send_event(websocket, "error", {"message": "Invalid download params."})
+                    continue
+                    
+                async def run_batch_download():
+                    try:
+                        # Define a subfolder in cache for this item
+                        item_cache_dir = os.path.join(
+                            os.path.expanduser("~"), 
+                            ".gemini", 
+                            "antigravity-cli", 
+                            "download_cache", 
+                            item_id
+                        )
+                        os.makedirs(item_cache_dir, exist_ok=True)
+                        
+                        # Report starting download
+                        await send_event(websocket, "batch_link_download_progress", {
+                            "item_id": item_id,
+                            "progress": 0,
+                            "status": "downloading"
+                        })
+                        
+                        def dl_progress(p):
+                            asyncio.run_coroutine_threadsafe(
+                                send_event(websocket, "batch_link_download_progress", {
+                                    "item_id": item_id,
+                                    "progress": p,
+                                    "status": "downloading"
+                                }),
+                                loop
+                            )
+                            
+                        # Download video using downloader
+                        video_rel_path = await asyncio.to_thread(downloader.download_video, url, item_cache_dir, dl_progress)
+                        video_abs_path = os.path.join(item_cache_dir, video_rel_path)
+                        
+                        # Send completed event
+                        await send_event(websocket, "batch_link_download_completed", {
+                            "item_id": item_id,
+                            "local_path": video_abs_path,
+                            "name": os.path.basename(video_abs_path),
+                            "status": "ready"
+                        })
+                    except Exception as err:
+                        logger.error(f"Error in run_batch_download: {err}", exc_info=True)
+                        await send_event(websocket, "batch_link_download_failed", {
+                            "item_id": item_id,
+                            "message": str(err)
+                        })
+                        
+                asyncio.create_task(run_batch_download())
                         
             elif cmd == "start_batch_process":
                 inputs = message.get("inputs", [])

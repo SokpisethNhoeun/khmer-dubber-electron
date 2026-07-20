@@ -1,11 +1,114 @@
 import json
 import logging
+import time
+import re
 from google import genai
 from google.genai import types
 
 logger = logging.getLogger("dubify.translator")
 
 from modules.transcriber import parse_timestamp
+
+def clean_khmer_text(text: str) -> str:
+    """
+    Cleans Khmer text to prevent stuttering/choppiness ('ak-ak' / 'awak-awak')
+    in Text-to-Speech (TTS) models.
+    - Removes HTML/XML tags.
+    - Removes Chinese and English characters.
+    - Removes emojis, Dingbats, and other pictographs.
+    - Removes brackets, parentheses, braces, and quotation marks.
+    - Removes special symbols (*, ~, @, #, etc.).
+    - Eliminates stuttering/repetitive words (e.g., duplicate adjacent words like 'ខ្ញុំ ខ្ញុំ', 'ហើយ ហើយ').
+    - Cleans up spacing (replaces multiple spaces with a single space, as spaces act as pause markers).
+    """
+    if not text:
+        return ""
+        
+    text = str(text)
+    
+    # 1. Remove HTML tags
+    text = re.sub(r'<[^>]*>', '', text)
+    
+    # 2. Remove Chinese characters
+    text = re.sub(r'[\u4e00-\u9fff]+', '', text)
+    
+    # 3. Remove Emojis and miscellaneous symbols
+    text = re.sub(r'[\u2600-\u27BF\u1F000-\u1F9FF\u1F600-\u1F64F\u1F680-\u1F6FF\u1F300-\u1F5FF]+', '', text)
+    
+    # 4. Remove English letters (TTS engine might try to spell them out, causing stutters)
+    text = re.sub(r'[a-zA-Z]+', '', text)
+    
+    # 5. Remove brackets, braces, parentheses (standard and full-width Chinese/Khmer variants)
+    text = re.sub(r'[()\[\]{}（）〈〉《》「」【】“”‘’"\'\'\"\'`«»៖]', '', text)
+    
+    # 6. Remove special symbols (keep native Khmer punctuation: ៕, ៗ, ៘, ៙ but clean others)
+    text = re.sub(r'[*~_@#\$%\^&\+=\<\>\/\\|–—\-–]', '', text)
+    
+    # 7. Clean up multiple spaces (multiple spaces introduce huge pauses and stuttering)
+    text = re.sub(r'\s+', ' ', text)
+    
+    # 8. Clean up common repeating words/syllables in translated script to avoid 'ak-ak'
+    words = text.split()
+    cleaned_words = []
+    for w in words:
+        if not cleaned_words or w != cleaned_words[-1]:
+            cleaned_words.append(w)
+    text = " ".join(cleaned_words)
+    
+    return text.strip()
+
+def safe_parse_json_list(text):
+    """Safely extracts and parses a JSON list from raw string response."""
+    text = text.strip()
+    if not text:
+        return []
+    
+    # Strip markdown code blocks if the model wrapped the response
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict):
+            # Sometimes the model returns a wrapper dictionary
+            for key, val in data.items():
+                if isinstance(val, list):
+                    return val
+        return []
+    except Exception as e:
+        logger.error(f"Failed to parse JSON: {e}. Raw text: {text[:500]}")
+        # Regex-based fallback to find array pattern
+        import re
+        match = re.search(r'\[\s*\{.*\}\s*\]', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except Exception:
+                pass
+        raise
+
+def generate_content_with_retry(client, model, contents, config, max_retries=3, delay=2):
+    """Helper to call Gemini API with retries and exponential backoff."""
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config
+            )
+            return response
+        except Exception as e:
+            logger.warning(f"Gemini API call failed (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
 
 def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
     """
@@ -17,7 +120,7 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
     if not api_key:
         raise ValueError("Gemini API key is required for translation.")
     
-    # Extract Chinese text with IDs and durations
+    # Extract Chinese text with IDs, durations and maximum character budgets
     items_to_translate = []
     for item in subtitles:
         try:
@@ -27,14 +130,30 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
         except Exception:
             duration = 3.0 # fallback default duration
             
+        # 13 characters per second is the safety limit corresponding to a max 1.6x speech rate
+        max_chars = max(12, int(duration * 13))
         items_to_translate.append({
             "id": item["id"], 
             "text": item["chinese_text"],
-            "duration_seconds": duration
+            "duration_seconds": duration,
+            "max_khmer_characters": max_chars
         })
     
     # Initialize Google GenAI client
     client = genai.Client(api_key=api_key)
+    
+    # Define structured output schema for subtitles list
+    response_schema_subtitles = types.Schema(
+        type=types.Type.ARRAY,
+        items=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "id": types.Schema(type=types.Type.INTEGER),
+                "text": types.Schema(type=types.Type.STRING),
+            },
+            required=["id", "text"],
+        )
+    )
     
     # PASS 1: Chunked Chinese to Khmer translation with duration alignment + emotion classification
     chunk_size = 40
@@ -51,24 +170,31 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
             "The source video is a Movie Recap/Review video (电影解说), so the narrative must be engaging, clear, and dramatic.\n"
             "Requirements:\n"
             "1. Movie Recap Style: Do NOT translate literally. Rewrite the text into natural, storytelling, and compelling Khmer, exactly like a professional movie review commentator on Facebook/YouTube. Make it very easy to understand and exciting for Khmer listeners.\n"
-            "2. Simple & Clear: Avoid overly formal, literary, or archaic Khmer words. Use simple, modern, conversational Khmer that immediately makes the storyline clear and easy to follow.\n"
-            "3. Timing alignment (Strict Max 1.6x speed): Look at the 'duration_seconds' for each item. The Khmer voice generator has a maximum speed limit of 1.6x. You MUST translate and condense the text so that it can be spoken comfortably within this duration at a maximum speed of 1.6x, while preserving 100% of the original meaning. For very short durations (e.g. < 2s), use extremely brief, punchy Khmer words.\n"
+            "2. Simple & Clear: Avoid overly formal, literary, or archaic Khmer words. Use simple, modern, conversational Khmer.\n"
+            "3. Clean and Fluent (NO STUTTERING/REPETITIONS): The output Khmer text must be smooth and fluent. Completely remove any filler words, hesitation markers (such as 'uh', 'um', 'ah', 'oh', 'អឺ', 'អឺម', 'អូ'), stuttering, or repeated words/syllables (like 'ak-ak', 'awak awak', 'អាក់អាក់', 'ខ្ញុំ...ខ្ញុំ'). The speech must flow continuously without any choppy pauses when read by a Text-to-Speech system.\n"
+            "4. No Special Symbols or Emojis: Do NOT include any emojis, Chinese characters, English words, brackets (like [ ], ( )), or special punctuation symbols (~, *, #, etc.) in the output. Translate all concepts fully into Khmer script, or phonetically transliterate English/Chinese names into Khmer characters.\n"
+            "5. Timing Alignment & Summarization (Strict Max Character Budget):\n"
+            "For each item, we have calculated the absolute maximum Khmer character limit in 'max_khmer_characters' (based on duration and a max speech rate of 1.6x).\n"
+            "You MUST ensure that the translated 'text' length does NOT exceed 'max_khmer_characters' under any circumstances!\n"
+            "If the literal translation is too long, you MUST summarize, condense, and shorten the phrasing so that it fits within the 'max_khmer_characters' budget while preserving the core meaning.\n"
             "Return the output STRICTLY as a JSON array of objects containing 'id' and 'text' (translated Khmer script).\n\n"
             f"Input data:\n{json.dumps(chunk, ensure_ascii=False)}"
         )
         
         try:
-            response_pass1 = client.models.generate_content(
+            response_pass1 = generate_content_with_retry(
+                client=client,
                 model=model_name,
                 contents=prompt_pass1,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
+                    response_schema=response_schema_subtitles
                 )
             )
             
             # Parse result
             text_pass1 = response_pass1.text.strip()
-            chunk_translated = json.loads(text_pass1)
+            chunk_translated = safe_parse_json_list(text_pass1)
             translated_items.extend(chunk_translated)
         except Exception as e:
             logger.error(f"Pass 1 translation failed on chunk {i // chunk_size + 1}: {e}")
@@ -76,32 +202,56 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
             
     logger.info(f"Pass 1 chunked translation complete. Merged {len(translated_items)} items. Starting Pass 2 polish...")
         
-    # PASS 2: Polish the entire merged script for natural native phrasing
+    # PASS 2: Polish the entire merged script for natural native phrasing while respecting budgets
+    pass2_items = []
+    for item in translated_items:
+        if not isinstance(item, dict) or "id" not in item:
+            continue
+        sub_id = item["id"]
+        orig = next((x for x in items_to_translate if x["id"] == sub_id), None)
+        max_chars = orig["max_khmer_characters"] if orig else 40
+        duration = orig["duration_seconds"] if orig else 3.0
+        pass2_items.append({
+            "id": sub_id,
+            "text": item.get("text") or item.get("khmer_text") or "",
+            "duration_seconds": duration,
+            "max_khmer_characters": max_chars
+        })
+
     prompt_pass2 = (
         "You are a master Khmer dialogue editor and movie recap script reviewer. Review, polish, and finalize the following Khmer subtitles.\n"
         "Requirements:\n"
         "1. Maximize Nativeness & Clarity: Polish each line to sound extremely colloquial, clear, and engaging. It should feel like a fluent Khmer movie narrator telling a story.\n"
-        "2. Auditory Cadence: Rewrite any stiff or awkward phrasing into smooth, native expressions that sound excellent when spoken aloud by a Khmer text-to-speech voice.\n"
-        "3. Timeline Constraints (Strict Max 1.6x speed): Make sure that sentence lengths are concise and brief. Do not use verbose expressions. The script must be short enough so that the text-to-speech engine can read it within each segment's duration at a maximum speed of 1.6x, without compromising the meaning.\n"
+        "2. Auditory Cadence (NO STUTTERING/CHOPPINESS): Rewrite any stiff or awkward phrasing into smooth, native expressions that sound excellent when spoken aloud by a Khmer text-to-speech voice. Eliminate all stuttering, repetitive phrases, and filler sounds to prevent choppy ('awak awak' / 'ak-ak') audio output.\n"
+        "3. No Special Symbols or Emojis: Ensure there are absolutely NO emojis, brackets, Chinese/English characters, or special symbols in the text. Ensure word spacing is clean and sparse (spaces in Khmer act as pause markers; too many spaces will make the TTS choppy and stutter).\n"
+        "4. Timeline Constraints (Strict Max Character Budget):\n"
+        "The polished text MUST NOT exceed the 'max_khmer_characters' limit under any circumstances.\n"
+        "If a polished line is too long, you MUST summarize, simplify, and condense it to fit the character limit without losing the main context.\n"
         "Return the output STRICTLY as a JSON array of objects with 'id' and 'text' (polished Khmer script) keys.\n\n"
-        f"Subtitles to polish:\n{json.dumps(translated_items, ensure_ascii=False)}"
+        f"Subtitles to polish:\n{json.dumps(pass2_items, ensure_ascii=False)}"
     )
     
     try:
-        response_pass2 = client.models.generate_content(
+        response_pass2 = generate_content_with_retry(
+            client=client,
             model=model_name,
             contents=prompt_pass2,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
+                response_schema=response_schema_subtitles
             )
         )
         
         text_pass2 = response_pass2.text.strip()
-        polished_items = json.loads(text_pass2)
+        polished_items = safe_parse_json_list(text_pass2)
         logger.info("Pass 2 translation polish successful.")
         
         # Map polished text back to subtitles list
-        polished_map = {item["id"]: item["text"] for item in polished_items}
+        polished_map = {}
+        for item in polished_items:
+            if isinstance(item, dict) and "id" in item:
+                polished_map[item["id"]] = clean_khmer_text(item.get("text") or item.get("khmer_text") or "")
+                
         for sub in subtitles:
             sub_id = sub["id"]
             if sub_id in polished_map:
@@ -109,7 +259,11 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
                 sub["emotion"] = "normal"
             else:
                 # Fallback to Pass 1
-                pass1_map = {item["id"]: item["text"] for item in translated_items}
+                pass1_map = {}
+                for item in translated_items:
+                    if isinstance(item, dict) and "id" in item:
+                        pass1_map[item["id"]] = clean_khmer_text(item.get("text") or item.get("khmer_text") or "")
+                
                 if sub_id in pass1_map:
                     sub["khmer_text"] = pass1_map[sub_id]
                     sub["emotion"] = "normal"
@@ -120,13 +274,16 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
     except Exception as e:
         logger.warning(f"Pass 2 polish failed or returned invalid JSON: {e}. Falling back to Pass 1 translation.")
         # Fallback to Pass 1 results
-        pass1_map = {item["id"]: item["text"] for item in translated_items}
+        pass1_map = {}
+        for item in translated_items:
+            if isinstance(item, dict) and "id" in item:
+                pass1_map[item["id"]] = clean_khmer_text(item.get("text") or item.get("khmer_text") or "")
+                
         for sub in subtitles:
             sub["khmer_text"] = pass1_map.get(sub["id"], "")
             sub["emotion"] = "normal"
             
     return subtitles
-
 
 def classify_subtitles_emotions(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
     """
@@ -150,6 +307,19 @@ def classify_subtitles_emotions(subtitles, api_key, model_name="gemini-3.1-flash
     chunk_size = 50
     classified_map = {}
     
+    # Define structured output schema for emotions classification list
+    response_schema_emotions = types.Schema(
+        type=types.Type.ARRAY,
+        items=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "id": types.Schema(type=types.Type.INTEGER),
+                "emotion": types.Schema(type=types.Type.STRING),
+            },
+            required=["id", "emotion"],
+        )
+    )
+    
     for i in range(0, len(items), chunk_size):
         chunk = items[i:i + chunk_size]
         prompt = (
@@ -165,17 +335,20 @@ def classify_subtitles_emotions(subtitles, api_key, model_name="gemini-3.1-flash
         )
         
         try:
-            response = client.models.generate_content(
+            response = generate_content_with_retry(
+                client=client,
                 model=model_name,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
+                    response_schema=response_schema_emotions
                 )
             )
             text = response.text.strip()
-            results = json.loads(text)
+            results = safe_parse_json_list(text)
             for res in results:
-                classified_map[res["id"]] = res.get("emotion", "normal")
+                if isinstance(res, dict) and "id" in res:
+                    classified_map[res["id"]] = res.get("emotion", "normal")
         except Exception as e:
             logger.error(f"Emotion classification failed on chunk {i // chunk_size + 1}: {e}")
             

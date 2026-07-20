@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, Link2, Folder, Play, FileVideo, Terminal, Trash2, X, Sliders } from 'lucide-react';
+import { Upload, Link2, Folder, Play, Pause, FileVideo, Terminal, Trash2, Sliders } from 'lucide-react';
 import { Input } from '../ui/input';
 import { wsService } from '../../services/websocket';
 import './BatchWorkspace.css';
@@ -27,6 +27,21 @@ export default function BatchWorkspace({
   const [showConfigPopup, setShowConfigPopup] = useState(false);
   const [popupTargetItem, setPopupTargetItem] = useState(null); // null = global batch settings, otherwise item object
   const [popupConfig, setPopupConfig] = useState({});
+  const [enableLogo, setEnableLogo] = useState(false);
+  const [enableFooter, setEnableFooter] = useState(false);
+  const [enableSubtitleStyle, setEnableSubtitleStyle] = useState(false);
+  const [enableSponsor, setEnableSponsor] = useState(false);
+
+  // Sync checkboxes with active configuration when popups open
+  useEffect(() => {
+    if (showConfigPopup) {
+      setEnableLogo(!!popupConfig.logo_path);
+      setEnableFooter(!!popupConfig.footer_text);
+      setEnableSubtitleStyle(!!popupConfig.subtitle_bg_style && popupConfig.subtitle_bg_style !== 'black');
+      setEnableSponsor(!!popupConfig.sponsor_type && popupConfig.sponsor_type !== 'none');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showConfigPopup]);
 
   const logsEndRef = useRef(null);
 
@@ -133,12 +148,65 @@ export default function BatchWorkspace({
       alert("Batch processing complete!");
     };
 
+    const handleDownloadProgress = (data) => {
+      setInputs((prev) =>
+        prev.map((item) => {
+          if (item.id === data.item_id) {
+            return { 
+              ...item, 
+              status: 'downloading', 
+              progress: data.progress 
+            };
+          }
+          return item;
+        })
+      );
+    };
+
+    const handleDownloadCompleted = (data) => {
+      setInputs((prev) =>
+        prev.map((item) => {
+          if (item.id === data.item_id) {
+            return { 
+              ...item, 
+              type: 'local',
+              path: data.local_path,
+              name: data.name,
+              status: 'ready'
+            };
+          }
+          return item;
+        })
+      );
+    };
+
+    const handleDownloadFailed = (data) => {
+      setInputs((prev) =>
+        prev.map((item) => {
+          if (item.id === data.item_id) {
+            return { 
+              ...item, 
+              status: 'failed', 
+              error: data.message 
+            };
+          }
+          return item;
+        })
+      );
+    };
+
     const unsubLog = wsService.on('batch_log', handleBatchLog);
     const unsubCompleted = wsService.on('batch_process_completed', handleBatchCompleted);
+    const unsubDlProgress = wsService.on('batch_link_download_progress', handleDownloadProgress);
+    const unsubDlCompleted = wsService.on('batch_link_download_completed', handleDownloadCompleted);
+    const unsubDlFailed = wsService.on('batch_link_download_failed', handleDownloadFailed);
 
     return () => {
       unsubLog();
       unsubCompleted();
+      unsubDlProgress();
+      unsubDlCompleted();
+      unsubDlFailed();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -201,6 +269,18 @@ export default function BatchWorkspace({
     setPopupTargetItem(null);
     setPopupConfig({ ...customizerSettings });
     setShowConfigPopup(true);
+  };
+
+  const handleDownloadLink = (itemId, url) => {
+    setInputs((prev) =>
+      prev.map((item) => {
+        if (item.id === itemId) {
+          return { ...item, status: 'downloading', progress: 0 };
+        }
+        return item;
+      })
+    );
+    wsService.send('download_batch_link', { url, item_id: itemId });
   };
 
   const handleRemoveItem = (id) => {
@@ -316,11 +396,15 @@ export default function BatchWorkspace({
   };
 
   const handleCancelBatch = () => {
-    if (window.confirm("Are you sure you want to cancel the entire batch process?")) {
+    if (window.confirm("Are you sure you want to pause/cancel the batch process? You can resume remaining videos later.")) {
       wsService.send('cancel_job', { job_name: 'batch' });
       setIsProcessing(false);
     }
   };
+
+  const successCount = inputs.filter(item => item.status === 'success').length;
+  const totalCount = inputs.length;
+  const totalPercent = totalCount > 0 ? Math.round((successCount / totalCount) * 100) : 0;
 
   return (
     <div className="batch-container">
@@ -391,7 +475,26 @@ export default function BatchWorkspace({
                       <span className="video-item-type">{item.type}</span>
                     </div>
 
-                    <div className="video-item-actions">
+                     <div className="video-item-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      {item.type === 'url' && (
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                          {item.status === 'downloading' ? (
+                            <span style={{ fontSize: '11px', color: 'var(--primary)', fontWeight: 'bold' }}>
+                              Downloading ({item.progress || 0}%)
+                            </span>
+                          ) : (
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => handleDownloadLink(item.id, item.url)}
+                              disabled={isProcessing}
+                              style={{ padding: '3px 8px', fontSize: '10px', height: '24px', lineHeight: 1 }}
+                            >
+                              Download Video
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      
                       <span className={`status-badge ${item.status}`}>
                         {item.status}
                       </span>
@@ -406,13 +509,16 @@ export default function BatchWorkspace({
                               setPopupConfig(item.customizer || { ...customizerSettings });
                               setShowConfigPopup(true);
                             }}
-                            style={{ color: item.customizer ? 'var(--primary)' : 'var(--text-muted)' }}
+                            disabled={item.status === 'downloading'}
+                            style={{ color: item.customizer ? 'var(--primary)' : 'var(--text-muted)', opacity: item.status === 'downloading' ? 0.3 : 1 }}
                           >
                             <Sliders size={14} />
                           </button>
                           <button 
                             className="btn-remove-item"
                             onClick={() => handleRemoveItem(item.id)}
+                            disabled={item.status === 'downloading'}
+                            style={{ opacity: item.status === 'downloading' ? 0.3 : 1 }}
                           >
                             <Trash2 size={14} />
                           </button>
@@ -462,17 +568,29 @@ export default function BatchWorkspace({
                   style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}
                 >
                   <Play size={14} fill="currentColor" />
-                  Start Batch Processing
+                  {successCount > 0 && successCount < totalCount ? 'Resume Batch Processing' : 'Start Batch Processing'}
                 </button>
               ) : (
-                <button
-                  className="btn btn-danger w-full"
-                  onClick={handleCancelBatch}
-                  style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}
-                >
-                  <X size={14} />
-                  Cancel Processing
-                </button>
+                <div className="flex flex-col gap-3" style={{ width: '100%' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text)' }}>
+                    <span>Total Batch Progress</span>
+                    <span style={{ fontWeight: 'bold', color: 'var(--primary)' }}>{totalPercent}%</span>
+                  </div>
+                  <div style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                    <div style={{ width: `${totalPercent}%`, height: '100%', background: 'linear-gradient(to right, var(--primary), var(--secondary))', transition: 'width-0.3s ease' }}></div>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center' }}>
+                    Completed: {successCount} of {totalCount} videos
+                  </p>
+                  <button
+                    className="btn btn-danger w-full"
+                    onClick={handleCancelBatch}
+                    style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', marginTop: '4px' }}
+                  >
+                    <Pause size={14} fill="currentColor" />
+                    Pause Processing
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -590,164 +708,240 @@ export default function BatchWorkspace({
 
               {/* Logo Options */}
               <div style={{ border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px' }}>
-                <h4 style={{ margin: '0 0 10px 0', fontSize: '13px', fontWeight: '600', color: 'var(--primary)' }}>1. Logo Overlay</h4>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div>
-                    <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Logo Path</label>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <input
-                        type="text"
-                        placeholder="Path to logo file (e.g. logo.png)..."
-                        value={popupConfig.logo_path || ''}
-                        onChange={(e) => setPopupConfig(prev => ({ ...prev, logo_path: e.target.value }))}
-                        style={{ flex: 1, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
-                      />
-                      {window.electron && (
-                        <button 
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => handleBrowseFile('logo_path')}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: enableLogo ? '12px' : '0' }}>
+                  <input 
+                    type="checkbox" 
+                    id="enable-logo-checkbox"
+                    checked={enableLogo}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setEnableLogo(checked);
+                      if (!checked) {
+                        setPopupConfig(prev => ({ ...prev, logo_path: '', logo_position: 'top_left', logo_opacity: 0.85 }));
+                      }
+                    }}
+                    style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
+                  />
+                  <label htmlFor="enable-logo-checkbox" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text)', cursor: 'pointer' }}>
+                    Enable Logo Overlay
+                  </label>
+                </div>
+                {enableLogo && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    <div>
+                      <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Logo Path</label>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <input
+                          type="text"
+                          placeholder="Path to logo file (e.g. logo.png)..."
+                          value={popupConfig.logo_path || ''}
+                          onChange={(e) => setPopupConfig(prev => ({ ...prev, logo_path: e.target.value }))}
+                          style={{ flex: 1, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
+                        />
+                        {window.electron && (
+                          <button 
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => handleBrowseFile('logo_path')}
+                          >
+                            Browse...
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                      <div>
+                        <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Position</label>
+                        <select
+                          value={popupConfig.logo_position || 'top_left'}
+                          onChange={(e) => setPopupConfig(prev => ({ ...prev, logo_position: e.target.value }))}
+                          style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
                         >
-                          Browse...
-                        </button>
-                      )}
+                          <option value="top_left">Top Left</option>
+                          <option value="top_right">Top Right</option>
+                          <option value="bottom_left">Bottom Left</option>
+                          <option value="bottom_right">Bottom Right</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Opacity ({popupConfig.logo_opacity !== undefined ? popupConfig.logo_opacity : 0.85})</label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={popupConfig.logo_opacity !== undefined ? popupConfig.logo_opacity : 0.85}
+                          onChange={(e) => setPopupConfig(prev => ({ ...prev, logo_opacity: parseFloat(e.target.value) }))}
+                          style={{ width: '100%', accentColor: 'var(--primary)', marginTop: '8px' }}
+                        />
+                      </div>
                     </div>
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                )}
+              </div>
+
+              {/* Footer Options */}
+              <div style={{ border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: enableFooter ? '12px' : '0' }}>
+                  <input 
+                    type="checkbox" 
+                    id="enable-footer-checkbox"
+                    checked={enableFooter}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setEnableFooter(checked);
+                      if (!checked) {
+                        setPopupConfig(prev => ({ ...prev, footer_text: '', footer_opacity: 0.85 }));
+                      }
+                    }}
+                    style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
+                  />
+                  <label htmlFor="enable-footer-checkbox" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text)', cursor: 'pointer' }}>
+                    Enable Footer Banner Text
+                  </label>
+                </div>
+                {enableFooter && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     <div>
-                      <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Position</label>
-                      <select
-                        value={popupConfig.logo_position || 'top_left'}
-                        onChange={(e) => setPopupConfig(prev => ({ ...prev, logo_position: e.target.value }))}
+                      <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Text Overlay</label>
+                      <input
+                        type="text"
+                        placeholder="Footer text (e.g. Subscribe for more!)..."
+                        value={popupConfig.footer_text || ''}
+                        onChange={(e) => setPopupConfig(prev => ({ ...prev, footer_text: e.target.value }))}
                         style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
-                      >
-                        <option value="top_left">Top Left</option>
-                        <option value="top_right">Top Right</option>
-                        <option value="bottom_left">Bottom Left</option>
-                        <option value="bottom_right">Bottom Right</option>
-                      </select>
+                      />
                     </div>
                     <div>
-                      <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Opacity ({popupConfig.logo_opacity !== undefined ? popupConfig.logo_opacity : 0.85})</label>
+                      <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Opacity ({popupConfig.footer_opacity !== undefined ? popupConfig.footer_opacity : 0.85})</label>
                       <input
                         type="range"
                         min="0"
                         max="1"
                         step="0.05"
-                        value={popupConfig.logo_opacity !== undefined ? popupConfig.logo_opacity : 0.85}
-                        onChange={(e) => setPopupConfig(prev => ({ ...prev, logo_opacity: parseFloat(e.target.value) }))}
+                        value={popupConfig.footer_opacity !== undefined ? popupConfig.footer_opacity : 0.85}
+                        onChange={(e) => setPopupConfig(prev => ({ ...prev, footer_opacity: parseFloat(e.target.value) }))}
                         style={{ width: '100%', accentColor: 'var(--primary)', marginTop: '8px' }}
                       />
                     </div>
                   </div>
-                </div>
-              </div>
-
-              {/* Footer Options */}
-              <div style={{ border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px' }}>
-                <h4 style={{ margin: '0 0 10px 0', fontSize: '13px', fontWeight: '600', color: 'var(--primary)' }}>2. Footer Banner Text</h4>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div>
-                    <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Text Overlay</label>
-                    <input
-                      type="text"
-                      placeholder="Footer text (e.g. Subscribe for more!)..."
-                      value={popupConfig.footer_text || ''}
-                      onChange={(e) => setPopupConfig(prev => ({ ...prev, footer_text: e.target.value }))}
-                      style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Opacity ({popupConfig.footer_opacity !== undefined ? popupConfig.footer_opacity : 0.85})</label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={popupConfig.footer_opacity !== undefined ? popupConfig.footer_opacity : 0.85}
-                      onChange={(e) => setPopupConfig(prev => ({ ...prev, footer_opacity: parseFloat(e.target.value) }))}
-                      style={{ width: '100%', accentColor: 'var(--primary)', marginTop: '8px' }}
-                    />
-                  </div>
-                </div>
+                )}
               </div>
 
               {/* Subtitles Options */}
               <div style={{ border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px' }}>
-                <h4 style={{ margin: '0 0 10px 0', fontSize: '13px', fontWeight: '600', color: 'var(--primary)' }}>3. Subtitles Background</h4>
-                <div>
-                  <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Style</label>
-                  <select
-                    value={popupConfig.subtitle_bg_style || 'black'}
-                    onChange={(e) => setPopupConfig(prev => ({ ...prev, subtitle_bg_style: e.target.value }))}
-                    style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
-                  >
-                    <option value="black">Black Rectangular Background Box</option>
-                    <option value="outline">Outline Only (No Background Box)</option>
-                    <option value="none">No Outline, No Background Box</option>
-                  </select>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: enableSubtitleStyle ? '12px' : '0' }}>
+                  <input 
+                    type="checkbox" 
+                    id="enable-subtitles-checkbox"
+                    checked={enableSubtitleStyle}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setEnableSubtitleStyle(checked);
+                      if (!checked) {
+                        setPopupConfig(prev => ({ ...prev, subtitle_bg_style: 'black' }));
+                      }
+                    }}
+                    style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
+                  />
+                  <label htmlFor="enable-subtitles-checkbox" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text)', cursor: 'pointer' }}>
+                    Enable Subtitles Background Styling
+                  </label>
                 </div>
+                {enableSubtitleStyle && (
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Style</label>
+                    <select
+                      value={popupConfig.subtitle_bg_style || 'black'}
+                      onChange={(e) => setPopupConfig(prev => ({ ...prev, subtitle_bg_style: e.target.value }))}
+                      style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
+                    >
+                      <option value="black">Black Rectangular Background Box</option>
+                      <option value="outline">Outline Only (No Background Box)</option>
+                      <option value="none">No Outline, No Background Box</option>
+                    </select>
+                  </div>
+                )}
               </div>
 
               {/* Sponsor Options */}
               <div style={{ border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px' }}>
-                <h4 style={{ margin: '0 0 10px 0', fontSize: '13px', fontWeight: '600', color: 'var(--primary)' }}>4. Sponsor / Ad Overlay</h4>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                    <div>
-                      <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Sponsor Type</label>
-                      <select
-                        value={popupConfig.sponsor_type || 'none'}
-                        onChange={(e) => setPopupConfig(prev => ({ ...prev, sponsor_type: e.target.value }))}
-                        style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
-                      >
-                        <option value="none">None</option>
-                        <option value="image">Image Overlay</option>
-                        <option value="video">Video Overlay (Intro/Outro)</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Position</label>
-                      <select
-                        value={popupConfig.sponsor_position || 'front'}
-                        onChange={(e) => setPopupConfig(prev => ({ ...prev, sponsor_position: e.target.value }))}
-                        style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
-                      >
-                        <option value="front">Front (Intro Video/Image)</option>
-                        <option value="end">End (Outro Video/Image)</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Asset Path</label>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <input
-                        type="text"
-                        placeholder="Path to sponsor video/image file..."
-                        value={popupConfig.sponsor_asset || ''}
-                        onChange={(e) => setPopupConfig(prev => ({ ...prev, sponsor_asset: e.target.value }))}
-                        style={{ flex: 1, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
-                      />
-                      {window.electron && (
-                        <button 
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => handleBrowseFile('sponsor_asset')}
-                        >
-                          Browse...
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <div>
-                    <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Sponsor Duration (seconds)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      value={popupConfig.sponsor_duration || 5}
-                      onChange={(e) => setPopupConfig(prev => ({ ...prev, sponsor_duration: parseInt(e.target.value) || 5 }))}
-                      style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
-                    />
-                  </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: enableSponsor ? '12px' : '0' }}>
+                  <input 
+                    type="checkbox" 
+                    id="enable-sponsor-checkbox"
+                    checked={enableSponsor}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setEnableSponsor(checked);
+                      if (!checked) {
+                        setPopupConfig(prev => ({ ...prev, sponsor_type: 'none', sponsor_position: 'front', sponsor_asset: '', sponsor_duration: 5 }));
+                      }
+                    }}
+                    style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
+                  />
+                  <label htmlFor="enable-sponsor-checkbox" style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text)', cursor: 'pointer' }}>
+                    Enable Sponsor / Ad Overlay
+                  </label>
                 </div>
+                {enableSponsor && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                      <div>
+                        <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Sponsor Type</label>
+                        <select
+                          value={popupConfig.sponsor_type || 'none'}
+                          onChange={(e) => setPopupConfig(prev => ({ ...prev, sponsor_type: e.target.value }))}
+                          style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
+                        >
+                          <option value="none">None</option>
+                          <option value="image">Image Overlay</option>
+                          <option value="video">Video Overlay (Intro/Outro)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Position</label>
+                        <select
+                          value={popupConfig.sponsor_position || 'front'}
+                          onChange={(e) => setPopupConfig(prev => ({ ...prev, sponsor_position: e.target.value }))}
+                          style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
+                        >
+                          <option value="front">Front (Intro Video/Image)</option>
+                          <option value="end">End (Outro Video/Image)</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Asset Path</label>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <input
+                          type="text"
+                          placeholder="Path to sponsor video/image file..."
+                          value={popupConfig.sponsor_asset || ''}
+                          onChange={(e) => setPopupConfig(prev => ({ ...prev, sponsor_asset: e.target.value }))}
+                          style={{ flex: 1, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
+                        />
+                        {window.electron && (
+                          <button 
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => handleBrowseFile('sponsor_asset')}
+                          >
+                            Browse...
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Sponsor Duration (seconds)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={popupConfig.sponsor_duration || 5}
+                        onChange={(e) => setPopupConfig(prev => ({ ...prev, sponsor_duration: parseInt(e.target.value) || 5 }))}
+                        style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text)', padding: '6px 10px', borderRadius: '4px', fontSize: '12px' }}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

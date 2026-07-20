@@ -133,6 +133,9 @@ async def generate_tts_for_subtitles(subtitles, project_dir, progress_callback=N
  
     for idx, sub in enumerate(subtitles):
         khmer_text = sub.get("khmer_text", "").strip()
+        from modules.translator import clean_khmer_text
+        khmer_text = clean_khmer_text(khmer_text)
+        sub["khmer_text"] = khmer_text
         if not khmer_text:
             continue
             

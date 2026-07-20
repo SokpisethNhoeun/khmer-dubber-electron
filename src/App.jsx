@@ -14,7 +14,7 @@ import {
   Save,
   Settings as SettingsIcon
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import './App.css';
 import Settings from './components/Settings';
 import SubtitleTable from './components/SubtitleTable';
@@ -57,6 +57,7 @@ export default function App() {
   const [batchInputs, setBatchInputs] = useState([]);
   const [batchExportDir, setBatchExportDir] = useState('');
   const [batchIsProcessing, setBatchIsProcessing] = useState(false);
+  const [splitterIsProcessing, setSplitterIsProcessing] = useState(false);
   const [batchShowTerminal, setBatchShowTerminal] = useState(false);
   const [batchLogs, setBatchLogs] = useState([]);
   const [startBatchFlag, setStartBatchFlag] = useState(false);
@@ -859,6 +860,8 @@ export default function App() {
     );
   }
 
+  const isAnyProcessing = !!activeJob || batchIsProcessing || splitterIsProcessing;
+
   return (
     <div 
       className="app-container"
@@ -930,7 +933,7 @@ export default function App() {
             <Select
               value={workspaceMode}
               onValueChange={(val) => setWorkspaceMode(val)}
-              disabled={!!activeJob}
+              disabled={isAnyProcessing}
             >
               <SelectTrigger className="w-full h-8 text-xs bg-black/25 border border-white/10 rounded-md focus:ring-0 focus:ring-offset-0 focus:outline-none">
                 <SelectValue placeholder="Select mode" />
@@ -943,15 +946,15 @@ export default function App() {
             </Select>
           </div>
           
-          <button className="btn btn-secondary btn-sm" onClick={() => setIsSessionsOpen(true)} disabled={activeJob}>
+          <button className="btn btn-secondary btn-sm" onClick={() => setIsSessionsOpen(true)} disabled={isAnyProcessing}>
             <FolderOpen size={14} />
             <span>Sessions</span>
           </button>
-          <button className="btn btn-secondary btn-sm" onClick={handleSaveProject} disabled={activeJob}>
+          <button className="btn btn-secondary btn-sm" onClick={handleSaveProject} disabled={isAnyProcessing}>
             <Save size={14} />
             <span>Save Project</span>
           </button>
-          <button className="btn btn-secondary btn-sm" onClick={() => setIsSettingsOpen(true)} disabled={activeJob}>
+          <button className="btn btn-secondary btn-sm" onClick={() => setIsSettingsOpen(true)} disabled={isAnyProcessing}>
             <SettingsIcon size={14} />
             <span>Settings</span>
           </button>
@@ -979,6 +982,8 @@ export default function App() {
           setBatchInputs={setBatchInputs}
           setWorkspaceMode={setWorkspaceMode}
           setStartBatchFlag={setStartBatchFlag}
+          isProcessing={splitterIsProcessing}
+          setIsProcessing={setSplitterIsProcessing}
         />
       ) : !projectData?.video_path ? (
         <div className="welcome-dashboard glass-panel">
@@ -1327,9 +1332,11 @@ export default function App() {
                             </button>
                             <button 
                               onClick={() => {
-                                handleRemoveSession(sess.id);
-                                // force render
-                                setIsSessionsOpen(true);
+                                if (window.confirm("Do you want to delete this session?")) {
+                                  handleRemoveSession(sess.id);
+                                  // force render
+                                  setIsSessionsOpen(true);
+                                }
                               }}
                               style={{
                                 background: 'transparent',

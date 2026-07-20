@@ -43,10 +43,11 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
         raise FileNotFoundError(f"Source video not found at {video_path}")
         
     # Get video duration using ffprobe
+    ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe").replace("FFMPEG", "FFPROBE")
     duration = 180.0
     try:
         res = subprocess.run([
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            ffprobe_path, "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", video_path
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
         if res.returncode == 0:
@@ -58,7 +59,7 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
     has_video_audio = False
     try:
         res = subprocess.run([
-            "ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type",
+            ffprobe_path, "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type",
             "-of", "default=noprint_wrappers=1:nokey=1", video_path
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
         if res.returncode == 0 and "audio" in res.stdout:

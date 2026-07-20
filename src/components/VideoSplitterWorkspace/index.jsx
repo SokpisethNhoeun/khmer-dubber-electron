@@ -5,12 +5,13 @@ import { wsService } from '../../services/websocket';
 export default function VideoSplitterWorkspace({
   setBatchInputs,
   setWorkspaceMode,
-  setStartBatchFlag
+  setStartBatchFlag,
+  isProcessing,
+  setIsProcessing
 }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [segmentMinutes, setSegmentMinutes] = useState(5);
   const [videoDuration, setVideoDuration] = useState(0); // in seconds
-  const [isProcessing, setIsProcessing] = useState(false);
   const [progressMsg, setProgressMsg] = useState('');
   const [progressPct, setProgressPct] = useState(0);
   const [splitParts, setSplitParts] = useState([]);
@@ -55,6 +56,7 @@ export default function VideoSplitterWorkspace({
       wsService.off('video_duration_retrieved', handleDurationRetrieved);
       wsService.off('error', handleError);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSelectFile = async () => {

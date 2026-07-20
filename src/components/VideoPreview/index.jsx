@@ -56,10 +56,18 @@ export default function VideoPreview({ videoUrl, subtitles, currentTime, onTimeU
 
   // Handle external playhead adjustments (from Timeline)
   useEffect(() => {
-    if (videoRef.current && Math.abs(videoRef.current.currentTime - currentTime) > 0.3) {
-      videoRef.current.currentTime = currentTime;
+    if (videoRef.current && videoRef.current.readyState >= 1) {
+      if (Math.abs(videoRef.current.currentTime - currentTime) > 0.3) {
+        videoRef.current.currentTime = currentTime;
+      }
     }
   }, [currentTime]);
+
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = currentTime;
+    }
+  };
 
   // Clean up active audio on unmount or mode switch
   useEffect(() => {
@@ -313,6 +321,7 @@ export default function VideoPreview({ videoUrl, subtitles, currentTime, onTimeU
               onPlay={() => handlePlayStateChange(true)}
               onPause={() => handlePlayStateChange(false)}
               onTimeUpdate={handleTimeUpdate}
+              onLoadedMetadata={handleLoadedMetadata}
               muted={isMuted || previewMode === 'dubbed'}
             />
             
