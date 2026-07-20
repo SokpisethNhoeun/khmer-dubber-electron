@@ -183,25 +183,36 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
     elif aspect_ratio == "4:3":
         video_filters.append("crop=min(iw\\,ih*4/3):min(ih\\,iw*3/4)")
         
-    # 2. Burn Subtitles (Use Khmer Font)
+    # 2. Burn Subtitles (Use Khmer Font with Dynamic Scaling)
     if burn_subtitles:
         srt_path = os.path.join(exports_dir, "temp_subs.srt")
         generate_srt(subtitles, srt_path)
         escaped_srt_path = srt_path.replace("\\", "/").replace(":", "\\:")
         
-        # Determine subtitle styling based on customizer options
-        sub_bg_style = customizer.get("subtitle_bg_style", "black") if customizer else "black"
-        if sub_bg_style == "transparent":
-            # Transparent style: Outline text only, no box background
-            style_expr = "FontName=Noto Sans Khmer,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1"
-        elif sub_bg_style == "blur":
-            # Semi-transparent background box
-            style_expr = "FontName=Noto Sans Khmer,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H88000000,BorderStyle=3,Outline=1,Shadow=1"
+        # Dynamic font sizing & vertical margin according to aspect ratio
+        if aspect_ratio == "9:16":
+            font_size = 22
+            margin_v = 45 # Higher vertical margin so text doesn't overlap TikTok/Reels UI
         else:
-            # Default 'black': Solid black background box
-            style_expr = "FontName=Noto Sans Khmer,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=1"
+            font_size = 18
+            margin_v = 25
             
-        # Determine font directory for libass fontselect helper
+        sub_bg_style = customizer.get("subtitle_bg_style", "black") if customizer else "black"
+        sub_color = customizer.get("subtitle_color", "white") if customizer else "white"
+        
+        primary_color_code = "&H00FFFFFF" # Default white
+        if sub_color == "yellow":
+            primary_color_code = "&H0000FFFF"
+        elif sub_color == "cyan":
+            primary_color_code = "&H00FFFF00"
+            
+        if sub_bg_style == "transparent":
+            style_expr = f"FontName=Noto Sans Khmer,FontSize={font_size},PrimaryColour={primary_color_code},OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,MarginV={margin_v}"
+        elif sub_bg_style == "blur":
+            style_expr = f"FontName=Noto Sans Khmer,FontSize={font_size},PrimaryColour={primary_color_code},OutlineColour=&H88000000,BorderStyle=3,Outline=1,Shadow=1,MarginV={margin_v}"
+        else:
+            style_expr = f"FontName=Noto Sans Khmer,FontSize={font_size},PrimaryColour={primary_color_code},OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=1,MarginV={margin_v}"
+            
         khmer_font_dir = os.path.dirname(khmer_font_path) if os.path.exists(khmer_font_path) else None
         if khmer_font_dir:
             escaped_font_dir = khmer_font_dir.replace("\\", "/").replace(":", "\\:")

@@ -399,6 +399,16 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   if (pythonProcess) {
     logToFile('INFO', 'Terminating Python backend sidecar...');
-    pythonProcess.kill();
+    if (process.platform === 'win32') {
+      try {
+        const { execSync } = require('child_process');
+        execSync(`taskkill /pid ${pythonProcess.pid} /T /F`);
+      } catch (e) {
+        logToFile('ERROR', `taskkill error: ${e.message}`);
+        pythonProcess.kill();
+      }
+    } else {
+      pythonProcess.kill();
+    }
   }
 });
