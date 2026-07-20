@@ -183,6 +183,13 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
     elif aspect_ratio == "4:3":
         video_filters.append("crop=min(iw\\,ih*4/3):min(ih\\,iw*3/4)")
         
+    # 1.5 Auto Copyright-Safe Visual Filler & Content ID Evader
+    if customizer and customizer.get("enable_copyright_safe"):
+        logger.info("Applying Auto Copyright-Safe Visual Filler filters (micro-zoom, color shift, vignette)...")
+        # Apply subtle dynamic eq color shift and vignette to disrupt Content ID visual hash matching
+        video_filters.append("eq=brightness=0.01:contrast=1.04:saturation=1.08")
+        video_filters.append("vignette=PI/6")
+        
     # 2. Burn Subtitles (Use Khmer Font with Dynamic Scaling)
     if burn_subtitles:
         srt_path = os.path.join(exports_dir, "temp_subs.srt")

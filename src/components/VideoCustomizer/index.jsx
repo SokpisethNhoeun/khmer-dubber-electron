@@ -382,6 +382,29 @@ export default function VideoCustomizer({ settings, onChange }) {
               )}
             </>
           )}
+
+          {/* Copyright-Safe Protection */}
+          <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px dashed var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span>🛡️ Copyright-Safe Protection</span>
+              </div>
+              <div style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                Disrupts Content ID fingerprinting using micro-vignette and color shifts
+              </div>
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '6px' }}>
+              <input
+                type="checkbox"
+                checked={!!settings.enable_copyright_safe}
+                onChange={(e) => onChange('enable_copyright_safe', e.target.checked)}
+                style={{ cursor: 'pointer', accentColor: 'var(--primary)' }}
+              />
+              <span style={{ fontSize: '10px', color: settings.enable_copyright_safe ? '#10b981' : 'var(--text-muted)', fontWeight: 600 }}>
+                {settings.enable_copyright_safe ? 'ON' : 'OFF'}
+              </span>
+            </label>
+          </div>
         </div>
       </div>
     </div>
