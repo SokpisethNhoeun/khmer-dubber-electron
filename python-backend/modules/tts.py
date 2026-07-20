@@ -75,24 +75,15 @@ def align_audio_duration(file_path, target_duration, ffmpeg_path="ffmpeg"):
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
-EMOTION_MAP = {
-    "normal": {"pitch": "+0Hz", "rate": "+0%"},
-    "excited": {"pitch": "+15%", "rate": "+10%"},
-    "sad": {"pitch": "-12%", "rate": "-10%"},
-    "fearful": {"pitch": "+8%", "rate": "-5%"},
-    "cheerful": {"pitch": "+8%", "rate": "+5%"}
-}
-
-async def generate_single_tts(text, voice_type, output_path, target_duration=0, ffmpeg_path="ffmpeg", emotion="normal"):
+async def generate_single_tts(text, voice_type, output_path, target_duration=0, ffmpeg_path="ffmpeg"):
     """
     Generates audio for a single text segment using edge-tts.
     If target_duration is specified, performs a double-pass to align speaking speed naturally!
     """
     voice = VOICE_MAP.get(voice_type.lower(), "km-KH-SreymomNeural")
-    style = EMOTION_MAP.get(emotion.lower(), {"pitch": "+0Hz", "rate": "+0%"})
     
     # Pass 1: Generate with normal speed
-    communicate = edge_tts.Communicate(text, voice, rate=style["rate"], pitch="+0Hz")
+    communicate = edge_tts.Communicate(text, voice, rate="+0%", pitch="+0Hz")
     await communicate.save(output_path)
     
     if target_duration <= 0:
@@ -140,7 +131,6 @@ async def generate_tts_for_subtitles(subtitles, project_dir, progress_callback=N
             continue
             
         voice_type = sub.get("voice", "female")
-        emotion = sub.get("emotion", "normal")
         filename = f"seg_{sub['id']:03d}.mp3"
         output_path = os.path.join(audio_dir, filename)
         
@@ -164,8 +154,8 @@ async def generate_tts_for_subtitles(subtitles, project_dir, progress_callback=N
             target_dur = 0
         
         try:
-            # Run neural speed rate alignment double pass with emotion
-            await generate_single_tts(khmer_text, voice_type, output_path, target_duration=target_dur, ffmpeg_path=ffmpeg_path, emotion=emotion)
+            # Run neural speed rate alignment double pass
+            await generate_single_tts(khmer_text, voice_type, output_path, target_duration=target_dur, ffmpeg_path=ffmpeg_path)
             # Fine-tune stretch final duration to fit block precisely
             if target_dur > 0:
                 align_audio_duration(output_path, target_dur, ffmpeg_path)

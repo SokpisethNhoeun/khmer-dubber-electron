@@ -256,7 +256,6 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
             sub_id = sub["id"]
             if sub_id in polished_map:
                 sub["khmer_text"] = polished_map[sub_id]
-                sub["emotion"] = "normal"
             else:
                 # Fallback to Pass 1
                 pass1_map = {}
@@ -266,10 +265,8 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
                 
                 if sub_id in pass1_map:
                     sub["khmer_text"] = pass1_map[sub_id]
-                    sub["emotion"] = "normal"
                 else:
                     sub["khmer_text"] = ""
-                    sub["emotion"] = "normal"
                 
     except Exception as e:
         logger.warning(f"Pass 2 polish failed or returned invalid JSON: {e}. Falling back to Pass 1 translation.")
@@ -281,86 +278,5 @@ def translate_subtitles(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
                 
         for sub in subtitles:
             sub["khmer_text"] = pass1_map.get(sub["id"], "")
-            sub["emotion"] = "normal"
             
-    return subtitles
-
-def classify_subtitles_emotions(subtitles, api_key, model_name="gemini-3.1-flash-lite"):
-    """
-    Classifies emotions for a list of subtitles in chunks of 50.
-    subtitles: list of subtitle dicts containing 'khmer_text' and/or 'chinese_text'.
-    """
-    if not api_key:
-        raise ValueError("Gemini API key is required for emotion classification.")
-        
-    client = genai.Client(api_key=api_key)
-    
-    # We will pass the list of subtitles (id, chinese_text, khmer_text) to Gemini.
-    items = []
-    for item in subtitles:
-        items.append({
-            "id": item["id"],
-            "chinese_text": item.get("chinese_text", ""),
-            "khmer_text": item.get("khmer_text", "")
-        })
-        
-    chunk_size = 50
-    classified_map = {}
-    
-    # Define structured output schema for emotions classification list
-    response_schema_emotions = types.Schema(
-        type=types.Type.ARRAY,
-        items=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "id": types.Schema(type=types.Type.INTEGER),
-                "emotion": types.Schema(type=types.Type.STRING),
-            },
-            required=["id", "emotion"],
-        )
-    )
-    
-    for i in range(0, len(items), chunk_size):
-        chunk = items[i:i + chunk_size]
-        prompt = (
-            "You are a master film dialogue director. Analyze the context of the following dialogue lines.\n"
-            "Assign exactly one of these lowercase emotion keys to each line based on context and dialogue content:\n"
-            "- 'normal': neutral, default statement\n"
-            "- 'excited': high energy, yelling, screaming, enthusiastic, angry, urgent\n"
-            "- 'sad': crying, whispering, melancholic, low energy, disappointed\n"
-            "- 'fearful': scared, stuttering, frightened, anxious\n"
-            "- 'cheerful': happy, laughing, joking, playful\n\n"
-            "Return the output STRICTLY as a JSON array of objects, containing 'id' and 'emotion' (the classified lowercase key).\n\n"
-            f"Dialogues:\n{json.dumps(chunk, ensure_ascii=False)}"
-        )
-        
-        try:
-            response = generate_content_with_retry(
-                client=client,
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=response_schema_emotions
-                )
-            )
-            text = response.text.strip()
-            results = safe_parse_json_list(text)
-            for res in results:
-                if isinstance(res, dict) and "id" in res:
-                    classified_map[res["id"]] = res.get("emotion", "normal")
-        except Exception as e:
-            logger.error(f"Emotion classification failed on chunk {i // chunk_size + 1}: {e}")
-            
-    # Map back
-    for sub in subtitles:
-        sub_id = sub["id"]
-        if sub_id in classified_map:
-            old_emotion = sub.get("emotion", "normal")
-            new_emotion = classified_map[sub_id]
-            if old_emotion != new_emotion:
-                sub["emotion"] = new_emotion
-                # If emotion changed, reset audio
-                sub["audio_status"] = "not_generated"
-                
     return subtitles

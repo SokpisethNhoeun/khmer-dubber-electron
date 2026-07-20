@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Play, Pause, Volume2, VolumeX, Maximize, Film } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, Maximize, Film, Loader2 } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import './VideoPreview.css';
 
@@ -13,7 +13,7 @@ const parseTimeToSeconds = (ts) => {
   return parseFloat(ts);
 };
 
-export default function VideoPreview({ videoUrl, subtitles, currentTime, onTimeUpdate, setPlayingState, displaySubtitles, setDisplaySubtitles, aspectRatio = 'original', setAspectRatio, customizerSettings }) {
+export default function VideoPreview({ videoUrl, subtitles, currentTime, onTimeUpdate, setPlayingState, displaySubtitles, setDisplaySubtitles, aspectRatio = 'original', setAspectRatio, customizerSettings, activeJob }) {
   const videoRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -504,6 +504,36 @@ export default function VideoPreview({ videoUrl, subtitles, currentTime, onTimeU
           <div className="video-placeholder">
             <Film size={48} className="placeholder-icon" />
             <p>No video loaded. Import a video or paste a URL below to start.</p>
+          </div>
+        )}
+
+        {/* Live Video Import & Download Progress Overlay */}
+        {activeJob && (activeJob.stage === 'importing_media' || activeJob.stage === 'downloading' || activeJob.stage === 'downloading_media') && (
+          <div className="video-loading-overlay" style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 35,
+            backgroundColor: 'rgba(13, 14, 18, 0.88)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '12px'
+          }}>
+            <Loader2 size={38} className="spinner" style={{ color: 'var(--primary)' }} />
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-main)' }}>
+                Downloading Video... {activeJob.progress || 0}%
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                {activeJob.status || 'Fetching video from link...'}
+              </div>
+            </div>
+            {/* Progress Bar */}
+            <div style={{ width: '65%', height: '6px', backgroundColor: 'rgba(255, 255, 255, 0.12)', borderRadius: '3px', overflow: 'hidden' }}>
+              <div style={{ width: `${activeJob.progress || 0}%`, height: '100%', backgroundColor: 'var(--primary)', transition: 'width 0.2s ease-out' }} />
+            </div>
           </div>
         )}
       </div>

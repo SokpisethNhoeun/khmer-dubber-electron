@@ -35,6 +35,11 @@ def download_video(url, output_dir, progress_callback=None):
         'quiet': True,
         'no_warnings': True,
         'overwrites': True,
+        'socket_timeout': 15, # 15s socket timeout to recover from network drop/switch
+        'retries': 20, # Auto-retry 20 times on internet connection changes
+        'fragment_retries': 20,
+        'skip_unavailable_fragments': True,
+        'cachedir': False, # Bypass cache lock corruption on network drops
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
@@ -65,4 +70,10 @@ def download_video(url, output_dir, progress_callback=None):
             return "media/source.mp4"
     except Exception as e:
         logger.error(f"Download failed for URL {url}: {e}")
+        # Clean up partial download files if interrupted by network drop
+        for part in glob.glob(os.path.join(media_dir, "*.part")) + glob.glob(os.path.join(media_dir, "*.ytdl")):
+            try:
+                os.remove(part)
+            except Exception:
+                pass
         raise e

@@ -1059,6 +1059,7 @@ export default function App() {
                 aspectRatio={aspectRatio}
                 setAspectRatio={setAspectRatio}
                 customizerSettings={customizerSettings}
+                activeJob={activeJob}
               />
               <VideoCustomizer
                 settings={customizerSettings}

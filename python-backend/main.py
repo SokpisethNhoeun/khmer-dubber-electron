@@ -266,6 +266,12 @@ def proxy_payment_status(reference_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def normalize_gemini_model(model_name: str) -> str:
+    """Normalizes model names to Gemini API model identifiers."""
+    if not model_name:
+        return "gemini-3.1-flash-lite"
+    return str(model_name).strip()
+
 @app.get("/files/{file_path:path}")
 async def get_project_file(file_path: str):
     if not state.project_dir:
@@ -571,44 +577,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                 t = asyncio.create_task(run_translation())
                 state.active_tasks["translate"] = t
-                
-            elif cmd == "auto_emotion":
-                api_key = message.get("api_key")
-                model_name = message.get("model", "gemini-3.1-flash-lite")
-                
-                if not state.project_dir or not state.project_data or not state.project_data.get("subtitles"):
-                    await send_event(websocket, "error", {"message": "Load or transcribe subtitles first."})
-                    continue
-                    
-                async def run_emotion_classification():
-                    try:
-                        await send_event(websocket, "progress", {"stage": "auto_emotion", "progress": 30, "status": "Classifying subtitle emotions using Gemini..."})
-                        
-                        subtitles = await asyncio.to_thread(
-                            translator.classify_subtitles_emotions,
-                            state.project_data["subtitles"],
-                            api_key,
-                            model_name
-                        )
-                        
-                        with state.lock:
-                            state.project_data["subtitles"] = subtitles
-                            project_json_path = os.path.join(state.project_dir, "project.json")
-                            with open(project_json_path, 'w', encoding='utf-8') as f:
-                                json.dump(state.project_data, f, indent=2, ensure_ascii=False)
-                                
-                        await send_event(websocket, "auto_emotion_completed", {"project_data": state.project_data})
-                    except asyncio.CancelledError:
-                        logger.info("Emotion classification task cancelled.")
-                        await send_event(websocket, "progress", {"stage": "auto_emotion", "progress": 0, "status": "Emotion classification cancelled."})
-                    except Exception as e:
-                        logger.error(f"Emotion classification failed: {e}")
-                        await send_event(websocket, "error", {"message": f"Emotion classification failed: {str(e)}"})
-                    finally:
-                        state.active_tasks.pop("auto_emotion", None)
-                        
-                t = asyncio.create_task(run_emotion_classification())
-                state.active_tasks["auto_emotion"] = t
                 
             elif cmd == "isolate_bgm":
                 if not state.project_dir or not state.project_data or not state.project_data.get("video_path"):
