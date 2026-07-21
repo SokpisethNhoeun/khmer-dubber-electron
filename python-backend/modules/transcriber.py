@@ -35,45 +35,94 @@ def parse_timestamp(ts_str):
     
     return seconds
 
+import gc
+
 def transcribe_video(video_path, model_name, models_dir, progress_callback=None):
     """
     Transcribes the video file using OpenAI Whisper with optimizations:
     - Sets initial_prompt to prevent hallucinations in Chinese movie recaps.
     - Sets condition_on_previous_text=False to prevent infinite looping over music gaps.
-    - Filters out phantom ultra-short or empty hallucinated segments.
-    - Uses CUDA if available, otherwise CPU.
+    - Uses CUDA if available, clears VRAM cache, and automatically falls back to CPU on CUDA OutOfMemoryError.
     """
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Using device for transcription: {device}")
-    
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     os.makedirs(models_dir, exist_ok=True)
+    
+    # 1. Clear GPU VRAM memory before loading model
+    gc.collect()
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Using initial device for transcription: {device}")
     
     model_file = os.path.join(models_dir, f"{model_name}.pt")
     if not os.path.exists(model_file) and progress_callback:
         progress_callback({"stage": "downloading_model", "progress": 0})
     
-    logger.info(f"Loading Whisper model '{model_name}' from {models_dir} on {device}")
-    model = whisper.load_model(model_name, device=device, download_root=models_dir)
-    
-    if progress_callback:
-        progress_callback({"stage": "transcribing", "progress": 10})
-        
-    logger.info(f"Transcribing {video_path} with optimized recap settings...")
-    
-    # Optimized parameters to improve Chinese accuracy and eliminate repetition loops
+    result = None
     initial_prompt = "以下是普通话电影解说、短剧或影评视频字幕："
-    result = model.transcribe(
-        video_path,
-        language="zh",
-        verbose=False,
-        initial_prompt=initial_prompt,
-        condition_on_previous_text=False, # Prevents text looping on silent BGM gaps
-        no_speech_threshold=0.6,
-        logprob_threshold=-1.0,
-        compression_ratio_threshold=2.4
-    )
     
-    from modules.voice_detector import batch_detect_gender
+    # Try CUDA first if available, with automatic CPU fallback on OutOfMemoryError
+    if device == "cuda":
+        try:
+            logger.info(f"Loading Whisper model '{model_name}' on CUDA GPU...")
+            model = whisper.load_model(model_name, device="cuda", download_root=models_dir)
+            if progress_callback:
+                progress_callback({"stage": "transcribing", "progress": 10})
+                
+            logger.info(f"Transcribing {video_path} on CUDA GPU...")
+            result = model.transcribe(
+                video_path,
+                language="zh",
+                verbose=False,
+                initial_prompt=initial_prompt,
+                condition_on_previous_text=False, # Prevents text looping on silent BGM gaps
+                no_speech_threshold=0.6,
+                logprob_threshold=-1.0,
+                compression_ratio_threshold=2.4
+            )
+        except Exception as e:
+            if "out of memory" in str(e).lower() or "cuda" in str(e).lower() or "oom" in str(e).lower():
+                logger.warning(f"CUDA Out Of Memory during transcription: {e}. Clearing VRAM and falling back to CPU...")
+                gc.collect()
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                result = None
+            else:
+                raise e
+
+    # Fallback to CPU if CUDA is unavailable or ran out of VRAM
+    if result is None:
+        logger.info(f"Loading Whisper model '{model_name}' on CPU...")
+        if progress_callback:
+            progress_callback({"stage": "transcribing", "progress": 10, "status": "GPU VRAM full: Transcribing on CPU..."})
+            
+        model = whisper.load_model(model_name, device="cpu", download_root=models_dir)
+        result = model.transcribe(
+            video_path,
+            language="zh",
+            verbose=False,
+            initial_prompt=initial_prompt,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+            logprob_threshold=-1.0,
+            compression_ratio_threshold=2.4
+        )
+        
+    # Clean up GPU VRAM memory after transcription
+    gc.collect()
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+    
+    # Removed voice_detector import; Gemini handles gender detection during translation now.
 
     segments = []
     raw_segments = result.get("segments", [])
@@ -101,7 +150,7 @@ def transcribe_video(video_path, model_name, models_dir, progress_callback=None)
             "end": format_timestamp(end_sec),
             "chinese_text": text,
             "khmer_text": "", # Will be filled by translation
-            "voice": "female", # default initial voice
+            "voice": "male", # Will be accurately assigned by Gemini during translation
             "audio_status": "not_generated",
             "audio_path": ""
         })
@@ -119,11 +168,11 @@ def transcribe_video(video_path, model_name, models_dir, progress_callback=None)
             progress_callback({
                 "stage": "transcribing", 
                 "progress": 85,
-                "status": "Auto-detecting speaker voices (batch)..."
+                "status": "Transcribing Chinese audio finished..."
             })
         
-        # Run batch gender detection in memory (extremely fast)
-        batch_detect_gender(video_path, segments)
+        # Legacy pitch-based gender detection has been removed. 
+        # Gemini AI will handle it with superior accuracy in Step 2.
         
     if progress_callback:
         progress_callback({"stage": "transcribing", "progress": 100})

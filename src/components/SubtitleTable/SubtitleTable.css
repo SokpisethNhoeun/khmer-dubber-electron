@@ -114,14 +114,13 @@
 }
 
 .subtitles-data-table th:nth-child(1), .subtitles-data-table td:nth-child(1) { width: 45px; text-align: center; } /* ID */
-.subtitles-data-table th:nth-child(2), .subtitles-data-table td:nth-child(2) { width: 85px; } /* START */
-.subtitles-data-table th:nth-child(3), .subtitles-data-table td:nth-child(3) { width: 85px; } /* END */
-.subtitles-data-table th:nth-child(4), .subtitles-data-table td:nth-child(4) { width: 150px; } /* CHINESE */
-.subtitles-data-table th:nth-child(5), .subtitles-data-table td:nth-child(5) { width: 220px; } /* KHMER */
+.subtitles-data-table th:nth-child(2), .subtitles-data-table td:nth-child(2) { width: 80px; } /* START */
+.subtitles-data-table th:nth-child(3), .subtitles-data-table td:nth-child(3) { width: 80px; } /* END */
+.subtitles-data-table th:nth-child(4), .subtitles-data-table td:nth-child(4) { width: 160px; } /* CHINESE */
+.subtitles-data-table th:nth-child(5), .subtitles-data-table td:nth-child(5) { width: 240px; } /* KHMER */
 .subtitles-data-table th:nth-child(6), .subtitles-data-table td:nth-child(6) { width: 80px; } /* VOICE */
-.subtitles-data-table th:nth-child(7), .subtitles-data-table td:nth-child(7) { width: 90px; } /* EMOTION */
-.subtitles-data-table th:nth-child(8), .subtitles-data-table td:nth-child(8) { width: 95px; } /* AUDIO STATUS */
-.subtitles-data-table th:nth-child(9), .subtitles-data-table td:nth-child(9) { width: 70px; text-align: center; } /* ACTIONS */
+.subtitles-data-table th:nth-child(7), .subtitles-data-table td:nth-child(7) { width: 125px; } /* AUDIO STATUS */
+.subtitles-data-table th:nth-child(8), .subtitles-data-table td:nth-child(8) { width: 70px; text-align: center; } /* ACTIONS */
 
 .subtitles-data-table th {
   background: rgba(0, 0, 0, 0.2);

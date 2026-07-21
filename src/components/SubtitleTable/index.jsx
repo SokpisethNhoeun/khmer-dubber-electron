@@ -4,7 +4,7 @@ import { Input } from '../ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import './SubtitleTable.css';
 
-export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelect, activeRowId }) {
+const SubtitleTable = React.memo(function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelect, activeRowId }) {
   const [editingId, setEditingId] = useState(null);
   const [editValues, setEditValues] = useState({});
   const [showFindReplace, setShowFindReplace] = useState(false);
@@ -438,8 +438,8 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
                     )}
                   </td>
                   <td>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span className={`status-badge  w-full ${sub.audio_status}`} style={{ margin: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', flexDirection: 'row', gap: '6px', whiteSpace: 'nowrap', width: '100%' }}>
+                      <span className={`status-badge ${sub.audio_status}`} style={{ margin: 0, whiteSpace: 'nowrap', flexShrink: 0 }}>
                         {sub.audio_status.replace('_', ' ')}
                       </span>
                        {sub.audio_status === 'ready' && sub.audio_path && (
@@ -503,4 +503,6 @@ export default function SubtitleTable({ subtitles, onUpdateSubtitles, onRowSelec
       </div>
     </div>
   );
-}
+});
+
+export default SubtitleTable;

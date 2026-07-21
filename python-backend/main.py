@@ -1,4 +1,5 @@
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import sys
 import json
 import asyncio
@@ -16,7 +17,7 @@ from google import genai
 # Set up path to import modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from modules import downloader, transcriber, translator, tts, bgm_isolator, lip_sync, project_manager, exporter
+from modules import downloader, transcriber, translator, tts, bgm_isolator, project_manager, exporter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("dubify.backend")
@@ -513,9 +514,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             )
                             
                         video_abs_path = os.path.join(state.project_dir, state.project_data["video_path"])
+                        vocal_path = os.path.join(state.project_dir, "media", "vocals_isolated.wav")
+                        transcribe_target = vocal_path if os.path.exists(vocal_path) else video_abs_path
+                        
                         subtitles = await asyncio.to_thread(
                             transcriber.transcribe_video,
-                            video_abs_path,
+                            transcribe_target,
                             model_name,
                             MODELS_DIR,
                             trans_progress
@@ -552,12 +556,29 @@ async def websocket_endpoint(websocket: WebSocket):
                     try:
                         await send_event(websocket, "progress", {"stage": "translating", "progress": 20, "status": "Sending transcripts to Gemini..."})
                         
+                        loop = asyncio.get_running_loop()
+                        
+                        def sync_progress(percent, msg):
+                            # Call the async send_event safely from a background thread
+                            asyncio.run_coroutine_threadsafe(
+                                send_event(websocket, "progress", {"stage": "translating", "progress": percent, "status": msg}),
+                                loop
+                            )
+                            
                         subtitles = await asyncio.to_thread(
                             translator.translate_subtitles,
                             state.project_data["subtitles"],
                             api_key,
-                            model_name
+                            model_name,
+                            state.project_data.get("video_path"),
+                            sync_progress
                         )
+                        
+                        # Verify translation actually produced results
+                        translated_count = sum(1 for s in subtitles if s.get("khmer_text", "").strip())
+                        if translated_count == 0:
+                            await send_event(websocket, "error", {"message": "Translation completed but no Khmer text was generated. Please check your Gemini API key and try again."})
+                            return
                         
                         with state.lock:
                             state.project_data["subtitles"] = subtitles
@@ -565,6 +586,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             with open(project_json_path, 'w', encoding='utf-8') as f:
                                 json.dump(state.project_data, f, indent=2, ensure_ascii=False)
                                 
+                        logger.info(f"Translation complete: {translated_count}/{len(subtitles)} subtitles translated to Khmer.")
                         await send_event(websocket, "translated", {"project_data": state.project_data})
                     except asyncio.CancelledError:
                         logger.info("Translation task cancelled.")
@@ -629,48 +651,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 t = asyncio.create_task(run_bgm())
                 state.active_tasks["isolate_bgm"] = t
                 
-            elif cmd == "lip_sync":
-                if not state.project_dir or not state.project_data:
-                    await send_event(websocket, "error", {"message": "No project loaded."})
-                    continue
-                    
-                async def run_lip_sync():
-                    try:
-                        await send_event(websocket, "progress", {"stage": "lip_sync", "progress": 10, "status": "Starting AI Lip-Sync..."})
-                        
-                        def sync_progress(p):
-                            asyncio.run_coroutine_threadsafe(
-                                send_event(websocket, "progress", p),
-                                loop
-                            )
-                            
-                        synced_video_path = await asyncio.to_thread(
-                            lip_sync.process_lip_sync,
-                            state.project_dir,
-                            state.project_data.get("subtitles", []),
-                            FFMPEG_PATH,
-                            sync_progress
-                        )
-                        
-                        with state.lock:
-                            state.project_data["lipsynced_video_path"] = synced_video_path
-                            project_json_path = os.path.join(state.project_dir, "project.json")
-                            with open(project_json_path, 'w', encoding='utf-8') as f:
-                                json.dump(state.project_data, f, indent=2, ensure_ascii=False)
-                                
-                        await send_event(websocket, "lip_synced", {"project_data": state.project_data})
-                    except asyncio.CancelledError:
-                        logger.info("Lip-sync task cancelled.")
-                        await send_event(websocket, "progress", {"stage": "lip_sync", "progress": 0, "status": "Lip-sync cancelled."})
-                    except Exception as e:
-                        logger.error(f"Lip-sync failed: {e}")
-                        await send_event(websocket, "error", {"message": f"Lip-sync failed: {str(e)}"})
-                    finally:
-                        state.active_tasks.pop("lip_sync", None)
-                        
-                t = asyncio.create_task(run_lip_sync())
-                state.active_tasks["lip_sync"] = t
-                
+
             elif cmd == "generate_tts":
                 # User can update subtitles directly before generating TTS
                 updated_subs = message.get("subtitles")
@@ -687,12 +668,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     try:
                         await send_event(websocket, "progress", {"stage": "generating_tts", "progress": 0, "status": "Generating Khmer neural voice segments..."})
                         
-                        def tts_progress(p):
+                        async def tts_progress(p):
                             if "generate_tts" not in state.active_tasks:
                                 return
-                            asyncio.create_task(
-                                send_event(websocket, "progress", {"stage": "generating_tts", "progress": p, "status": f"Generating Khmer voices ({p}%)..."})
-                            )
+                            await send_event(websocket, "progress", {"stage": "generating_tts", "progress": p, "status": f"Generating Khmer voices ({p}%)..."})
                             
                         subtitles = await tts.generate_tts_for_subtitles(
                             state.project_data["subtitles"],
@@ -774,6 +753,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 output_path = message.get("output_path")
                 aspect_ratio = message.get("aspect_ratio", "original")
                 customizer = message.get("customizer")
+                audio_mode = message.get("audio_mode", "khmer")
+                
                 if not state.project_dir or not state.project_data:
                     await send_event(websocket, "error", {"message": "No project opened."})
                     continue
@@ -802,7 +783,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             burn_subtitles,
                             export_progress,
                             aspect_ratio,
-                            customizer
+                            customizer,
+                            audio_mode
                         )
                         
                         video_output_abs = os.path.join(state.project_dir, export_rel_path)
@@ -1010,6 +992,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 model_name = message.get("model", "gemini-3.1-flash-lite")
                 whisper_model = message.get("whisper_model", "base")
                 customizer = message.get("customizer")
+                audio_mode = message.get("audio_mode", "khmer")
                 
                 if not inputs:
                     await send_event(websocket, "error", {"message": "No inputs provided for batch processing."})
@@ -1078,9 +1061,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             
                             # 3. Transcribe Video & Auto-Detect Gender
                             await log_msg(f"[Step 3/6] Transcribing Chinese text & detecting speaker genders...", "info")
+                            vocal_abs_path = os.path.join(temp_workspace, "media", "vocals_isolated.wav")
+                            transcribe_target = vocal_abs_path if os.path.exists(vocal_abs_path) else video_abs_path
+                            
                             subtitles = await asyncio.to_thread(
                                 transcriber.transcribe_video,
-                                video_abs_path,
+                                transcribe_target,
                                 whisper_model,
                                 MODELS_DIR,
                                 None
@@ -1097,7 +1083,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                 translator.translate_subtitles,
                                 subtitles,
                                 api_key,
-                                model_name
+                                model_name,
+                                video_abs_path,
+                                None
                             )
                             
                             # 5. Generate TTS Voices
@@ -1120,7 +1108,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 burn_subtitles,
                                 None,
                                 "original",
-                                item_customizer
+                                item_customizer,
+                                audio_mode
                             )
                             
                             final_video_name = f"dubbed_{os.path.splitext(os.path.basename(video_abs_path))[0]}.mp4"

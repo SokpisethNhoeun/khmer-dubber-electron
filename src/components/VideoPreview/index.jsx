@@ -23,6 +23,7 @@ export default function VideoPreview({ videoUrl, subtitles, currentTime, onTimeU
 
   const activeAudioRef = useRef(null);
   const activeAudioSubIdRef = useRef(null);
+  const bgmAudioRef = useRef(null);
 
   const getSubtitleStyle = () => {
     const bgStyle = customizerSettings?.subtitle_bg_style || 'black';
@@ -76,8 +77,48 @@ export default function VideoPreview({ videoUrl, subtitles, currentTime, onTimeU
         activeAudioRef.current.pause();
         activeAudioRef.current = null;
       }
+      if (bgmAudioRef.current) {
+        bgmAudioRef.current.pause();
+        bgmAudioRef.current = null;
+      }
     };
   }, []);
+
+  // Synchronize BGM Audio with player
+  useEffect(() => {
+    if (previewMode !== 'dubbed' || !videoUrl) {
+      if (bgmAudioRef.current) {
+        bgmAudioRef.current.pause();
+      }
+      return;
+    }
+
+    if (!bgmAudioRef.current) {
+      // Attempt to load the BGM track (it will silently fail if not isolated yet)
+      const bgmUrl = `http://127.0.0.1:9847/files/media/bgm_isolated.wav`;
+      const newBgm = new Audio(bgmUrl);
+      newBgm.volume = 0.4; // Slightly lower volume for BGM
+      bgmAudioRef.current = newBgm;
+    }
+
+    const bgm = bgmAudioRef.current;
+    if (bgm) {
+      const isVideoSeeking = videoRef.current && videoRef.current.seeking;
+      if (isVideoSeeking) {
+        if (!bgm.paused) bgm.pause();
+      } else {
+        if (isPlaying && bgm.paused && !bgm.ended) {
+          bgm.play().catch(() => {});
+        } else if (!isPlaying && !bgm.paused) {
+          bgm.pause();
+        }
+        
+        if (Math.abs(bgm.currentTime - currentTime) > 0.5) {
+          bgm.currentTime = currentTime >= 0 ? currentTime : 0;
+        }
+      }
+    }
+  }, [currentTime, isPlaying, previewMode, videoUrl]);
 
   // Synchronize Khmer TTS Audio segments with player
   useEffect(() => {
@@ -119,14 +160,21 @@ export default function VideoPreview({ videoUrl, subtitles, currentTime, onTimeU
       } else {
         const audio = activeAudioRef.current;
         if (audio) {
-          if (isPlaying && audio.paused) {
-            audio.play().catch(err => console.error("Dubbing preview play failed:", err));
-          } else if (!isPlaying && !audio.paused) {
-            audio.pause();
-          }
+          const isVideoSeeking = videoRef.current && videoRef.current.seeking;
           
-          if (Math.abs(audio.currentTime - relativeTime) > 0.3) {
-            audio.currentTime = relativeTime >= 0 ? relativeTime : 0;
+          if (isVideoSeeking) {
+            if (!audio.paused) audio.pause();
+          } else {
+            if (isPlaying && audio.paused && !audio.ended) {
+              audio.play().catch(err => console.error("Dubbing preview play failed:", err));
+            } else if (!isPlaying && !audio.paused) {
+              audio.pause();
+            }
+            
+            if (!audio.ended && Math.abs(audio.currentTime - relativeTime) > 1.0) {
+              // Only seek if we are wildly out of sync, to avoid stuttering during buffering
+              audio.currentTime = relativeTime >= 0 ? relativeTime : 0;
+            }
           }
         }
       }

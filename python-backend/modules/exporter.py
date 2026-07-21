@@ -32,7 +32,7 @@ def generate_srt(subtitles, output_srt_path):
             f.write(f"{format_srt_time(start_sec)} --> {format_srt_time(end_sec)}\n")
             f.write(f"{text}\n\n")
 
-def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=False, progress_callback=None, aspect_ratio="original", customizer=None):
+def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=False, progress_callback=None, aspect_ratio="original", customizer=None, audio_mode="khmer"):
     """
     Combines the source video, isolated BGM, and generated TTS segments into the final video.
     Optionally burns in subtitles, overlays branding elements (logo, text, footer), and inserts sponsors.
@@ -74,18 +74,22 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
         pass
 
     # Check if BGM exists. If not, fallback to original video audio or silence
-    has_bgm = os.path.exists(bgm_path)
+    if audio_mode == "original":
+        has_bgm = False
+    else:
+        has_bgm = os.path.exists(bgm_path)
     
     if progress_callback:
         progress_callback({"stage": "exporting", "progress": 10, "status": "Preparing assets..."})
         
     # Filter valid subtitles with ready audio files
     valid_subs = []
-    for sub in subtitles:
-        if sub.get("audio_status") == "ready" and sub.get("audio_path"):
-            full_audio_path = os.path.join(project_dir, sub["audio_path"])
-            if os.path.exists(full_audio_path):
-                valid_subs.append((sub, full_audio_path))
+    if audio_mode != "original":
+        for sub in subtitles:
+            if sub.get("audio_status") == "ready" and sub.get("audio_path"):
+                full_audio_path = os.path.join(project_dir, sub["audio_path"])
+                if os.path.exists(full_audio_path):
+                    valid_subs.append((sub, full_audio_path))
                 
     # Inputs list construction:
     # 0: source video
@@ -99,14 +103,22 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
         inputs += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
         bgm_source = "[1:a]"
     else:
-        bgm_source = "[0:a]"
+        if audio_mode == "khmer":
+            inputs += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+            bgm_source = "[1:a]"
+        else:
+            bgm_source = "[0:a]"
         
     # Add TTS segment inputs
     for _, audio_path in valid_subs:
         inputs += ["-i", audio_path]
         
     # Dynamic TTS and branding input index calculations
-    tts_start_idx = 2 if (has_bgm or not has_video_audio) else 1
+    if has_bgm or not has_video_audio or (audio_mode == "khmer" and not has_bgm):
+        tts_start_idx = 2
+    else:
+        tts_start_idx = 1
+        
     next_input_idx = tts_start_idx + len(valid_subs)
     
     logo_input_idx = None
@@ -154,13 +166,13 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
         if num_tts == 1:
             filter_complex.append(f"{tts_delays[0]}aformat=channel_layouts=stereo[all_tts]")
         else:
-            filter_complex.append("".join(tts_delays) + f"amix=inputs={num_tts}:duration=first:dropout_transition=2:normalize=0[all_tts]")
+            filter_complex.append("".join(tts_delays) + f"amix=inputs={num_tts}:duration=longest:dropout_transition=2:normalize=0[all_tts]")
             
         # 4. Apply smart sidechain compression to BGM using the mixed TTS stream
         filter_complex.append("[bgm_resampled][all_tts]sidechaincompress=threshold=0.08:ratio=10:attack=150:release=600[bgm_ducked]")
         
         # 5. Mix the ducked BGM and mixed TTS together
-        filter_complex.append("[bgm_ducked][all_tts]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[mixed_audio]")
+        filter_complex.append("[bgm_ducked][all_tts]amix=inputs=2:duration=longest:dropout_transition=2:normalize=0[mixed_audio]")
         
         # 6. Apply loudness normalization to target -14 LUFS (YouTube & Facebook Reels standard)
         filter_complex.append("[mixed_audio]loudnorm=I=-14:TP=-1.5:LRA=11[normalized_audio]")
@@ -373,15 +385,20 @@ def export_video(project_dir, subtitles, ffmpeg_path="ffmpeg", burn_subtitles=Fa
     cmd = [ffmpeg_path, "-y"] + inputs
     cmd += ["-filter_complex", filter_complex_str]
     
+    audio_map = "[normalized_audio]"
+    if audio_mode == "original" and has_video_audio:
+        audio_map = "0:a"
+        
     cmd += [
         "-map", v_map,
-        "-map", "[normalized_audio]",
+        "-map", audio_map,
         "-c:v", "libx264",
         "-preset", "superfast",
         "-threads", "0",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "192k",
+        "-shortest",
         output_path
     ]
     

@@ -50,8 +50,8 @@ def align_audio_duration(file_path, target_duration, ffmpeg_path="ffmpeg"):
     
     # Perform time stretch if the gap is greater than 5% overflow or 15% underflow
     if factor > 1.05 or factor < 0.85:
-        # Cap speedup at 1.6x and slowdown at 0.75x to prevent robotic sounding pitch distortions
-        factor = min(1.6, max(0.75, factor))
+        # Cap speedup at 1.25x and slowdown at 1.0x (no slowdown allowed)
+        factor = min(1.25, max(1.0, factor))
         
         temp_path = file_path + ".temp.mp3"
         if os.path.exists(temp_path):
@@ -99,8 +99,8 @@ async def generate_single_tts(text, voice_type, output_path, target_duration=0, 
     # If speed needs significant adjustments
     if factor > 1.05 or factor < 0.95:
         pct_change = int((factor - 1.0) * 100)
-        # Clamp rate adjustments between -50% and +60% (max 1.6x speedup)
-        pct_change = min(60, max(-50, pct_change))
+        # Clamp rate adjustments between 0% (1.0x) and +25% (1.25x speedup)
+        pct_change = min(25, max(0, pct_change))
         
         rate_str = f"{pct_change:+d}%"
         logger.info(f"Regenerating TTS segment {output_path} at rate {rate_str} to fit target {target_duration:.2f}s (natural: {natural_dur:.2f}s)")
@@ -140,7 +140,10 @@ async def generate_tts_for_subtitles(subtitles, project_dir, progress_callback=N
         if sub.get("audio_status") == "ready" and sub.get("audio_path") == audio_rel_path and os.path.exists(audio_abs_path):
             logger.info(f"Skipping TTS generation for segment {sub['id']} (audio already exists).")
             if progress_callback:
-                progress_callback(int((idx + 1) / total * 100))
+                if asyncio.iscoroutinefunction(progress_callback):
+                    await progress_callback(int((idx + 1) / total * 100))
+                else:
+                    progress_callback(int((idx + 1) / total * 100))
             continue
             
         try:
@@ -169,6 +172,9 @@ async def generate_tts_for_subtitles(subtitles, project_dir, progress_callback=N
             sub["audio_status"] = "failed"
         
         if progress_callback:
-            progress_callback(int((idx + 1) / total * 100))
+            if asyncio.iscoroutinefunction(progress_callback):
+                await progress_callback(int((idx + 1) / total * 100))
+            else:
+                progress_callback(int((idx + 1) / total * 100))
             
     return subtitles

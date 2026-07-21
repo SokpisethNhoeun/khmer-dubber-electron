@@ -359,20 +359,21 @@ ipcMain.handle('get-temp-workspace', async () => {
     logToFile('ERROR', `Failed to clean up old temp workspaces: ${err.message}`);
   }
 
-  // 2. Return a single fixed draft directory for startup
-  const draftPath = path.join(baseDir, 'default_draft');
+  // 2. Return a unique directory for the workspace
+  const draftPath = path.join(baseDir, `project_${Date.now()}`);
   return draftPath;
 });
 
 app.whenReady().then(() => {
+  logToFile('INFO', 'Launching Electron UI window immediately (0ms launch)...');
+  createWindow();
   startPythonBackend();
+
   checkBackendReady((ready) => {
     if (ready) {
-      logToFile('INFO', 'Python backend is up and running. Launching Electron UI...');
-      createWindow();
+      logToFile('INFO', 'Python backend is up and running on port 9847.');
     } else {
-      logToFile('ERROR', 'Failed to connect to Python backend. Launching UI anyway...');
-      createWindow();
+      logToFile('ERROR', 'Failed to connect to Python backend on port 9847 within timeout.');
     }
   });
 

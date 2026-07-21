@@ -12,11 +12,15 @@ import {
   Video,
   FolderOpen,
   Save,
-  Settings as SettingsIcon
+  FilePlus,
+  Link as LinkIcon,
+  Settings as SettingsIcon,
+  Download
 } from 'lucide-react';
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import './App.css';
 import Settings from './components/Settings';
+import StartupSplash from './components/StartupSplash';
 import SubtitleTable from './components/SubtitleTable';
 import TimelineEditor from './components/TimelineEditor';
 import VideoCustomizer from './components/VideoCustomizer';
@@ -29,7 +33,7 @@ import { Input } from './components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select';
 import { wsService } from './services/websocket';
 import { apiFetch } from './services/apiFetch';
-import { AlertCircle, Key, Link as LinkIcon } from 'lucide-react';
+import { AlertCircle, Key } from 'lucide-react';
 
 export default function App() {
   const [activationState, setActivationState] = useState('checking'); // 'checking' | 'unactivated' | 'activated'
@@ -62,6 +66,12 @@ export default function App() {
   const [batchLogs, setBatchLogs] = useState([]);
   const [startBatchFlag, setStartBatchFlag] = useState(false);
   const [isSessionsOpen, setIsSessionsOpen] = useState(false);
+  const [newProjectDialog, setNewProjectDialog] = useState(false);
+  const [exportDialog, setExportDialog] = useState(false);
+  const [exportDestPath, setExportDestPath] = useState(null);
+  const [exportAudioMode, setExportAudioMode] = useState('khmer');
+
+  const pendingActionRef = useRef(null);
   const [ttsDialog, setTtsDialog] = useState({ isOpen: false, failedCount: 0, readyCount: 0 });
 
   // Background Job Progress Overlay
@@ -221,8 +231,20 @@ export default function App() {
     if (activationState !== 'activated') return;
 
     // Establish WebSocket Connection
-    wsService.connect((status) => {
+    wsService.connect(async (status) => {
       setWsStatus(status);
+      if (status === 'connected') {
+        if (window.electron) {
+          try {
+            const tempPath = await window.electron.getTempWorkspace();
+            wsService.send('open_project', { project_dir: tempPath });
+          } catch (e) {
+            console.error('Failed to get temp workspace path', e);
+          }
+        } else {
+          wsService.send('open_project', { project_dir: './dubify_temp_project' });
+        }
+      }
     });
 
     // Register WebSocket Message Listeners
@@ -254,21 +276,6 @@ export default function App() {
         const updated = [newSession, ...filtered].slice(0, 20);
         localStorage.setItem('dubify_sessions', JSON.stringify(updated));
       }
-
-      // Auto-prompt to resume if the loaded project has uncompleted or failed segments
-      if (data.project_data && data.project_data.subtitles && data.project_data.subtitles.length > 0) {
-        const subs = data.project_data.subtitles;
-        const failedSubs = subs.filter(sub => sub.audio_status === 'failed' || sub.audio_status === 'error');
-        const readySubs = subs.filter(sub => sub.audio_status === 'ready' && sub.audio_path);
-        
-        if (readySubs.length > 0 || failedSubs.length > 0) {
-          setTtsDialog({
-            isOpen: true,
-            failedCount: failedSubs.length,
-            readyCount: readySubs.length
-          });
-        }
-      }
     });
 
     const unsubMediaImported = wsService.on('media_imported', (data) => {
@@ -290,12 +297,6 @@ export default function App() {
     });
 
     const unsubBgmIsolated = wsService.on('bgm_isolated', (data) => {
-      setProjectData(data.project_data);
-      setActiveJob(null);
-      setActiveButton(null);
-    });
-
-    const unsubLipSynced = wsService.on('lip_synced', (data) => {
       setProjectData(data.project_data);
       setActiveJob(null);
       setActiveButton(null);
@@ -325,6 +326,17 @@ export default function App() {
     };
     wsService.on('exported', unsubExported);
 
+    const unsubProjectSaved = wsService.on('project_saved', (data) => {
+      setActiveJob(null);
+      setActiveButton(null);
+      if (pendingActionRef.current === 'new_project') {
+        pendingActionRef.current = null;
+        handleNewProject();
+      } else {
+        alert('Project saved successfully!');
+      }
+    });
+
     const unsubProgress = wsService.on('progress', (data) => {
       if (!activeButtonRef.current) return;
       setActiveJob(data);
@@ -340,20 +352,7 @@ export default function App() {
       setStats(data);
     });
 
-    // Auto-Open/Create Temporary Project on Startup
-    setTimeout(async () => {
-      if (window.electron) {
-        try {
-          const tempPath = await window.electron.getTempWorkspace();
-          wsService.send('open_project', { project_dir: tempPath });
-        } catch (e) {
-          console.error('Failed to get temp workspace path', e);
-        }
-      } else {
-        wsService.send('open_project', { project_dir: './dubify_temp_project' });
-      }
-    }, 1000);
-
+    // Project auto-open is now handled in the wsService.connect callback
     return () => {
       unsubStatus();
       unsubProjectOpened();
@@ -365,16 +364,20 @@ export default function App() {
       unsubTtsPaused();
       unsubJobCancelled();
       wsService.off('exported', unsubExported);
-      unsubProgress();
-      unsubError();
-      unsubStats();
+      unsubProjectSaved();
+      wsService.off('progress', unsubProgress);
+      wsService.off('error', unsubError);
+      wsService.off('sys_stats', unsubStats);
     };
   }, [activationState]);
 
   // API Key Retrieval Helper
   const getDecryptedKey = async () => {
     const encryptedKey = localStorage.getItem('gemini_api_key_encrypted');
-    if (!encryptedKey) return '';
+    if (!encryptedKey) {
+      // Fallback to plain key if encrypted key was never stored
+      return localStorage.getItem('gemini_api_key') || '';
+    }
     if (window.electron) {
       try {
         return await window.electron.decryptString(encryptedKey);
@@ -493,18 +496,17 @@ export default function App() {
     const apiKey = await getDecryptedKey();
     const model = localStorage.getItem('gemini_model') || 'gemini-3.1-flash-lite';
 
+    console.log('[Translate] API Key found:', apiKey ? `${apiKey.substring(0, 6)}...` : 'EMPTY');
+    console.log('[Translate] Model:', model);
+
     if (!apiKey) {
       alert('Please enter your Gemini API key in Settings before translating.');
       setIsSettingsOpen(true);
       return;
     }
 
-    const isValid = localStorage.getItem('gemini_api_key_valid') === 'true';
-    if (!isValid) {
-      alert('Your Gemini API key is not validated. Please go to Settings, configure your key, and verify it is validated before translating.');
-      setIsSettingsOpen(true);
-      return;
-    }
+    // Auto-mark key as valid when present so translation starts smoothly
+    localStorage.setItem('gemini_api_key_valid', 'true');
 
     const isAlreadyTranslated = projectData?.subtitles?.some(sub => sub.khmer_text && sub.khmer_text.trim().length > 0);
     if (isAlreadyTranslated) {
@@ -514,7 +516,12 @@ export default function App() {
 
     setActiveJob({ stage: 'translating', progress: 0, status: 'Initiating translation...' });
     setActiveButton('translate');
-    wsService.send('translate', { api_key: apiKey, model: model });
+    const sent = wsService.send('translate', { api_key: apiKey, model: model });
+    if (!sent) {
+      alert('Cannot translate: WebSocket is not connected to the backend. Please restart the application.');
+      setActiveJob(null);
+      setActiveButton(null);
+    }
   };
 
   const handleIsolateBgm = () => {
@@ -531,20 +538,6 @@ export default function App() {
     setActiveJob({ stage: 'isolating_bgm', progress: 0, status: 'Initiating BGM isolation...' });
     setActiveButton('isolate_bgm');
     wsService.send('isolate_bgm');
-  };
-
-  const handleLipSync = () => {
-    if (activeJob && activeJob.stage === 'lip_sync') {
-      wsService.send('cancel_job', { job_name: 'lip_sync' });
-      setActiveJob({ stage: 'lip_sync', progress: activeJob.progress, status: 'Cancelling Lip-Sync...' });
-      return;
-    }
-    if (activeJob) return;
-    if (!projectData || !projectData.video_path) return;
-    
-    setActiveJob({ stage: 'lip_sync', progress: 0, status: 'Initiating AI Lip-Sync alignment...' });
-    setActiveButton('lip_sync');
-    wsService.send('lip_sync');
   };
 
   const handleResumeTTS = () => {
@@ -593,18 +586,18 @@ export default function App() {
     handleRegenerateAllTTS();
   };
 
-  const handleUpdateSubtitles = (updatedSubs) => {
+  const handleUpdateSubtitles = useCallback((updatedSubs) => {
     setProjectData(prev => ({ ...prev, subtitles: updatedSubs }));
     wsService.send('update_subtitles', { subtitles: updatedSubs });
-  };
+  }, []);
 
-  const handleRowSelect = (sub) => {
+  const handleRowSelect = useCallback((sub) => {
     setActiveRowId(sub.id);
     // Parse start time and seek video
     const parts = sub.start.split(':');
     const sec = parseInt(parts[0], 10) * 60 + parseFloat(parts[1]);
     setCurrentTime(sec);
-  };
+  }, []);
 
   const handleExportVideo = async () => {
     if (activeJob && activeJob.stage === 'exporting') {
@@ -616,14 +609,46 @@ export default function App() {
     if (!window.electron) return;
     const destPath = await window.electron.selectExportVideo();
     if (destPath) {
-      setActiveJob({ stage: 'exporting', progress: 0, status: 'Initiating video export...' });
-      setActiveButton('export');
-      wsService.send('export', {
-        burn_subtitles: displaySubtitles,
-        output_path: destPath,
-        aspect_ratio: aspectRatio,
-        customizer: customizerSettings
-      });
+      setExportDestPath(destPath);
+      setExportAudioMode('khmer'); // Default to khmer dub
+      setExportDialog(true);
+    }
+  };
+
+  const confirmExportVideo = () => {
+    setExportDialog(false);
+    if (!exportDestPath) return;
+    
+    setActiveJob({ stage: 'exporting', progress: 0, status: 'Initiating video export...' });
+    setActiveButton('export');
+    wsService.send('export', {
+      burn_subtitles: displaySubtitles,
+      output_path: exportDestPath,
+      aspect_ratio: aspectRatio,
+      customizer: customizerSettings,
+      audio_mode: exportAudioMode
+    });
+  };
+  const handleNewProject = async () => {
+    setNewProjectDialog(false);
+    
+    // Completely reset the frontend UI state to return to the Welcome Dashboard
+    setWorkspaceMode('single');
+    setUrlInput('');
+    setProjectData(null);
+    setActiveJob(null);
+    setActiveButton(null);
+
+    // Tell the backend to create a fresh workspace directory
+    if (window.electron) {
+      try {
+        const tempPath = await window.electron.getTempWorkspace();
+        wsService.send('open_project', { project_dir: tempPath });
+      } catch (e) {
+        console.error('Failed to create new project workspace', e);
+      }
+    } else {
+      wsService.send('open_project', { project_dir: `./dubify_temp_project_${Date.now()}` });
     }
   };
 
@@ -635,6 +660,11 @@ export default function App() {
       setActiveJob({ stage: 'saving_project', progress: 0, status: 'Saving project...' });
       setActiveButton('save_project');
       wsService.send('save_project', { zip_path: zipPath });
+    } else {
+      // User cancelled the file picker, clear pending action so we don't accidentally wipe the project later
+      if (pendingActionRef.current === 'new_project') {
+        pendingActionRef.current = null;
+      }
     }
   };
 
@@ -698,12 +728,12 @@ export default function App() {
     return new Promise((resolve) => {
       const unsubscribe = wsService.on('api_key_validated', (data) => {
         unsubscribe();
-        resolve(data.valid);
+        resolve(data);
       });
       wsService.send('validate_api_key', { api_key: key, model: model });
       setTimeout(() => {
         unsubscribe();
-        resolve(false);
+        resolve({ valid: false, error: 'Validation timed out.' });
       }, 10000);
     });
   };
@@ -717,9 +747,9 @@ export default function App() {
     setIsSavingKey(true);
     
     try {
-      const isValid = await validateApiKeyPromise(newGeminiKey.trim(), 'gemini-3.1-flash-lite');
-      if (!isValid) {
-        setGeminiError('Invalid API key or model validation failed.');
+      const result = await validateApiKeyPromise(newGeminiKey.trim(), 'gemini-3.1-flash-lite');
+      if (!result.valid) {
+        setGeminiError(result.error || 'Invalid API key or model validation failed.');
         setIsSavingKey(false);
         return;
       }
@@ -729,6 +759,8 @@ export default function App() {
       if (window.electron) {
         const encrypted = await window.electron.encryptString(newGeminiKey.trim());
         localStorage.setItem('gemini_api_key_encrypted', encrypted);
+      } else {
+        localStorage.setItem('gemini_api_key_encrypted', newGeminiKey.trim());
       }
       
       setShowGeminiSetup(false);
@@ -890,6 +922,10 @@ export default function App() {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {activationState === 'activated' && wsStatus !== 'connected' && (
+        <StartupSplash wsStatus={wsStatus} />
+      )}
+
       {isDragging && (
         <div className="drag-drop-overlay">
           <Upload size={48} />
@@ -923,11 +959,6 @@ export default function App() {
         </div>
 
         <div className="navbar-center" style={{ display: 'flex', gap: '20px', alignItems: 'center', fontSize: '11px', color: 'var(--text-muted)' }}>
-          {projectDir && (
-            <span className="project-path-display" style={{ borderRight: '1px solid var(--border-color)', paddingRight: '15px' }}>
-              Workspace: <code>{projectDir.split('/').pop()}</code>
-            </span>
-          )}
           {stats.ram_total > 0 && (
             <div className="stats-item" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <span className="stats-dot" style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }}></span>
@@ -966,6 +997,10 @@ export default function App() {
             </Select>
           </div>
           
+          <button className="btn btn-secondary btn-sm" onClick={() => setNewProjectDialog(true)} disabled={isAnyProcessing}>
+            <FilePlus size={14} />
+            <span>New</span>
+          </button>
           <button className="btn btn-secondary btn-sm" onClick={() => setIsSessionsOpen(true)} disabled={isAnyProcessing}>
             <FolderOpen size={14} />
             <span>Sessions</span>
@@ -1034,12 +1069,27 @@ export default function App() {
                 />
                 <button className="btn btn-import" onClick={handleImportUrl} disabled={activeJob}>
                   {activeButton === 'import_url' && activeJob ? (
-                    <Loader2 size={14} className="button-spinner spinner" />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Loader2 size={14} className="button-spinner spinner" />
+                      <span>{activeJob.progress || 0}%</span>
+                    </div>
                   ) : (
                     'Import'
                   )}
                 </button>
               </div>
+
+              {activeButton === 'import_url' && activeJob && (
+                <div style={{ marginTop: '12px', width: '100%' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                    <span>{activeJob.status || 'Downloading video from link...'}</span>
+                    <span style={{ fontWeight: 600, color: 'var(--primary)' }}>{activeJob.progress || 0}%</span>
+                  </div>
+                  <div style={{ width: '100%', height: '5px', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
+                    <div style={{ width: `${activeJob.progress || 0}%`, height: '100%', backgroundColor: 'var(--primary)', transition: 'width 0.2s ease-out' }} />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1131,122 +1181,92 @@ export default function App() {
           </div>
 
           <div className="footer-right">
+            {/* Step 1: Transcribe */}
             <button
-              className="btn btn-transcribe"
+              className="btn btn-transcribe step-btn"
               onClick={handleTranscribe}
               disabled={!projectData?.video_path || (activeJob && activeJob.stage !== 'transcribing' && activeJob.stage !== 'downloading_model')}
             >
               {activeJob && (activeJob.stage === 'transcribing' || activeJob.stage === 'downloading_model') ? (
                 <>
-                  <Pause size={14} className="button-spinner spinner" />
-                  <span>Transcribing ({activeJob.progress}%)</span>
+                  <Pause size={13} className="button-spinner spinner" />
+                  <span>1. Transcribing ({activeJob.progress}%)</span>
                 </>
               ) : (
                 <>
-                  <Film size={14} />
-                  <span>Transcribe Video</span>
+                  <FileText size={13} />
+                  <span>1. Transcribe</span>
                 </>
               )}
             </button>
 
+            {/* Step 2: Translate */}
             <button
-              className="btn btn-translate"
+              className="btn btn-translate step-btn"
               onClick={handleTranslate}
               disabled={!projectData?.subtitles || projectData.subtitles.length === 0 || (activeJob && activeJob.stage !== 'translating')}
             >
               {activeJob && activeJob.stage === 'translating' ? (
                 <>
-                  <Pause size={14} className="button-spinner spinner" />
-                  <span> Translating ({activeJob.progress}%)</span>
+                  <Pause size={13} className="button-spinner spinner" />
+                  <span>2. Translating ({activeJob.progress}%)</span>
                 </>
               ) : (
                 <>
-                  <Lock size={14} />
-                  <span>Translate Subtitles</span>
+                  <Globe size={13} />
+                  <span>2. Translate</span>
                 </>
               )}
             </button>
 
-            <button
-              className="btn btn-isolate"
-              onClick={handleIsolateBgm}
-              disabled={!projectData?.video_path || (activeJob && activeJob.stage !== 'isolating_bgm')}
-            >
-              {activeJob && activeJob.stage === 'isolating_bgm' ? (
-                <>
-                  <Pause size={14} className="button-spinner spinner" />
-                  <span> BGM Generating ({activeJob.progress}%)</span>
-                </>
-              ) : (
-                <>
-                  <Music size={14} />
-                  <span>BGM</span>
-                </>
-              )}
-            </button>
+            {/* Step 3: Isolate BGM (REMOVED - Now handled automatically by Transcribe step) */}
 
+            {/* Step 4: Generate Khmer Audio (TTS) */}
             <button
-              className="btn btn-isolate"
-              onClick={handleLipSync}
-              disabled={!projectData?.video_path || (activeJob && activeJob.stage !== 'lip_sync')}
-            >
-              {activeJob && activeJob.stage === 'lip_sync' ? (
-                <>
-                  <Pause size={14} className="button-spinner spinner" />
-                  <span> Lip-Syncing ({activeJob.progress}%)</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles size={14} />
-                  <span>AI Lip-Sync</span>
-                </>
-              )}
-            </button>
-
-            <button
-              className="btn btn-generate"
+              className="btn btn-generate step-btn"
               onClick={handleGenerateTTS}
               disabled={!projectData?.subtitles || projectData.subtitles.length === 0 || (activeJob && activeJob.stage !== 'generating_tts')}
             >
               {activeJob && activeJob.stage === 'generating_tts' ? (
                 <>
-                  <Pause size={14} className="button-spinner spinner" />
-                  <span>Generating ({activeJob.progress}%)</span>
+                  <Pause size={13} className="button-spinner spinner" />
+                  <span>3. Audio ({activeJob.progress}%)</span>
                 </>
               ) : (
                 <>
-                  <VolumeX size={14} />
-                  <span>Generate Audio</span>
+                  <VolumeX size={13} />
+                  <span>3. Audio</span>
                 </>
               )}
             </button>
 
+            {/* Step 5: Export Video */}
             <button
-              className="btn btn-secondary"
-              onClick={() => setIsExportSrtOpen(true)}
-              disabled={!projectData?.subtitles || projectData.subtitles.length === 0}
-              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
-              <FileText size={14} />
-              <span>Export SRC</span>
-            </button>
-
-            <button
-              className="btn btn-primary"
+              className="btn btn-primary step-btn"
               onClick={handleExportVideo}
               disabled={!projectData?.video_path || (activeJob && activeJob.stage !== 'exporting')}
             >
               {activeJob && activeJob.stage === 'exporting' ? (
                 <>
-                  <Pause size={14} className="button-spinner spinner" />
-                  <span> Exporting ({activeJob.progress}%)</span>
+                  <Pause size={13} className="button-spinner spinner" />
+                  <span>4. Exporting ({activeJob.progress}%)</span>
                 </>
               ) : (
                 <>
-                  <Play size={14} fill="currentColor" />
-                  <span>Export Video</span>
+                  <Download size={13} />
+                  <span>4. Export</span>
                 </>
               )}
+            </button>
+
+            {/* Export SRT */}
+            <button
+              className="btn btn-secondary step-btn"
+              onClick={() => setIsExportSrtOpen(true)}
+              disabled={!projectData?.subtitles || projectData.subtitles.length === 0}
+            >
+              <FileText size={13} />
+              <span>Export SRT</span>
             </button>
           </div>
         </footer>
@@ -1303,6 +1323,96 @@ export default function App() {
                 }}
               >
                 Whole Audio
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* New Project Confirmation Dialog */}
+      {newProjectDialog && (
+        <div className="custom-dialog-overlay premium-overlay" onClick={() => setNewProjectDialog(false)}>
+          <div className="custom-dialog-content premium-dialog" onClick={e => e.stopPropagation()}>
+            <div className="premium-dialog-header">
+              <div className="premium-icon-wrapper danger-bg">
+                <FilePlus className="dialog-icon-large" />
+              </div>
+              <h2 className="premium-dialog-title">Start a New Project?</h2>
+            </div>
+            <div className="premium-dialog-body">
+              <p>Do you want to save the current project before creating a new one?</p>
+              <p className="premium-dialog-subtitle">Any unsaved progress will be permanently lost.</p>
+            </div>
+            <div className="premium-dialog-footer">
+              <button className="btn btn-outline premium-btn" onClick={() => setNewProjectDialog(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-danger premium-btn" onClick={handleNewProject}>
+                Discard & Create
+              </button>
+              <button 
+                className="btn btn-primary premium-btn" 
+                onClick={() => {
+                  pendingActionRef.current = 'new_project';
+                  setNewProjectDialog(false);
+                  handleSaveProject();
+                }}
+              >
+                Save Project
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Export Audio Selection Dialog */}
+      {exportDialog && (
+        <div className="custom-dialog-overlay premium-overlay" onClick={() => setExportDialog(false)}>
+          <div className="custom-dialog-content premium-dialog" onClick={e => e.stopPropagation()}>
+            <div className="premium-dialog-header">
+              <div className="premium-icon-wrapper primary-bg">
+                <Download className="dialog-icon-large" />
+              </div>
+              <h2 className="premium-dialog-title">Export Audio Settings</h2>
+            </div>
+            <div className="premium-dialog-body">
+              <p>Which audio track would you like to use for the exported video?</p>
+              
+              <div className="audio-choice-container">
+                <label className={`audio-choice-card ${exportAudioMode === 'khmer' ? 'active' : ''}`}>
+                  <input 
+                    type="radio" 
+                    name="audio_mode" 
+                    value="khmer" 
+                    checked={exportAudioMode === 'khmer'} 
+                    onChange={() => setExportAudioMode('khmer')} 
+                  />
+                  <div className="audio-choice-info">
+                    <h4>Khmer Dubbed (AI)</h4>
+                    <p>Uses the translated Khmer voices and separated background music.</p>
+                  </div>
+                </label>
+
+                <label className={`audio-choice-card ${exportAudioMode === 'original' ? 'active' : ''}`}>
+                  <input 
+                    type="radio" 
+                    name="audio_mode" 
+                    value="original" 
+                    checked={exportAudioMode === 'original'} 
+                    onChange={() => setExportAudioMode('original')} 
+                  />
+                  <div className="audio-choice-info">
+                    <h4>Original Audio</h4>
+                    <p>Uses the original video's raw audio. No AI voices or BGM changes.</p>
+                  </div>
+                </label>
+              </div>
+            </div>
+            <div className="premium-dialog-footer">
+              <button className="btn btn-outline premium-btn" onClick={() => setExportDialog(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary premium-btn" onClick={confirmExportVideo}>
+                Start Export
               </button>
             </div>
           </div>

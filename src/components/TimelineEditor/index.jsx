@@ -61,7 +61,11 @@ export default function TimelineEditor({
     });
 
     // Load from dynamic dynamic static serving
-    ws.load(`http://127.0.0.1:9847/files/${bgmPath}`);
+    ws.load(`http://127.0.0.1:9847/files/${bgmPath}`).catch(err => {
+      if (err.name !== 'AbortError') {
+        console.warn('WaveSurfer load error:', err);
+      }
+    });
     wavesurferRef.current = ws;
 
     return () => {
